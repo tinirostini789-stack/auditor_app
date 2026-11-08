@@ -84,6 +84,7 @@
       const [skuInput, setSkuInput] = useState('');
       const [selectedSkuObj, setSelectedSkuObj] = useState(null);
       const [inputQty, setInputQty] = useState('');
+      const [checkerQty, setCheckerQty] = useState(''); // <-- Qty Tambahan Checker/QC
       const [unit, setUnit] = useState('Pcs');
       const [conversionRatio, setConversionRatio] = useState(50);
       const [auditorNote, setAuditorNote] = useState('');
@@ -136,7 +137,6 @@
             }
           }
 
-          // Sinkronisasi data To-Do dari Supabase
           const { data: todoData, error: todoError } = await supabase.from('audit_todos').select('*');
           if (!todoError && todoData && todoData.length > 0) {
             const formattedTodos = todoData.map(t => ({
@@ -150,18 +150,6 @@
               completed: t.completed
             }));
             setTodos(formattedTodos);
-          } else if (!todoData || todoData.length === 0) {
-            const initialTodos = [
-              { id: 't1', title: 'Audit Fisik Sepatu Sneaker RAK A1-A3', description: 'Cek fisik dan pastikan label barcode sesuai', period: 'Harian', priority: 'High', dueDate: '2026-11-08', assignedTo: 'Semua Tim', completed: false },
-              { id: 't2', title: 'Verifikasi Stok Koli Kaos Kaki', description: 'Pastikan 1 Koli isi tepat 100 Pcs', period: 'Mingguan', priority: 'Medium', dueDate: '2026-11-12', assignedTo: 'Auditor 1', completed: true },
-              { id: 't3', title: 'Opname Total Area Bulk Gudang C', description: 'Rekonsiliasi akhir bulan barang berat', period: 'Bulanan', priority: 'High', dueDate: '2026-11-30', assignedTo: 'Auditor 2', completed: false }
-            ];
-            for (const t of initialTodos) {
-              await supabase.from('audit_todos').upsert({
-                id: t.id, title: t.title, description: t.description, priority: t.priority, period: t.period, due_date: t.dueDate, assigned_to: t.assignedTo, completed: t.completed
-              }, { onConflict: 'id' });
-            }
-            setTodos(initialTodos);
           }
 
           const { data: skuData, error: skuError } = await supabase.from('master_skus').select('*');
@@ -193,6 +181,7 @@
               sku: log.sku,
               name: log.name,
               inputQty: log.input_qty,
+              checkerQty: log.checker_qty !== undefined && log.checker_qty !== null ? log.checker_qty : 0,
               unit: log.unit,
               pcsQty: log.pcs_qty,
               koliQty: log.karung_qty,
@@ -271,7 +260,6 @@
           alert('Akun baru berhasil ditambahkan dan tersimpan ke Cloud Supabase!');
         } catch (err) {
           console.error('Gagal tambah akun:', err);
-          alert('Gagal menambah akun ke database cloud.');
         }
       };
 
@@ -319,7 +307,6 @@
           alert('Perubahan akun berhasil disimpan ke Cloud Supabase!');
         } catch (err) {
           console.error('Gagal update akun ke cloud:', err);
-          alert('Gagal menyimpan ke cloud database.');
         }
       };
 
@@ -349,7 +336,7 @@
       const handleAddAuditLog = async (e) => {
         e.preventDefault();
         if (currentRole === 'qc') {
-          alert('Akun QC tidak diizinkan untuk menginput data audit fisik.');
+          alert('Akun QC tidak diizinkan untuk menginput data audit fisik awal.');
           return;
         }
         if (!skuInput || !inputQty || parseFloat(inputQty) <= 0) {
@@ -361,6 +348,7 @@
 
         const newLogId = Date.now().toString();
         const currentTimestamp = new Date().toLocaleString('id-ID');
+        const parsedCheckerQty = parseFloat(checkerQty) || 0;
 
         const newLog = {
           id: newLogId,
@@ -369,6 +357,7 @@
           sku: activeSkuObj.sku,
           name: activeSkuObj.name,
           inputQty: parseFloat(inputQty),
+          checkerQty: parsedCheckerQty,
           unit: unit,
           pcsQty: convertedValues.pcs,
           koliQty: convertedValues.koli,
@@ -382,11 +371,12 @@
         };
 
         setAuditLogs([newLog, ...auditLogs]);
-        logActionHistory('TAMBAH_SKU', activeSkuObj.sku, `Input ${inputQty} ${unit} (${convertedValues.pcs} Pcs) di ${zoneToSave || 'Zona General'}`);
+        logActionHistory('TAMBAH_SKU', activeSkuObj.sku, `Input ${inputQty} ${unit} (Checker Qty: ${parsedCheckerQty}) di ${zoneToSave || 'Zona General'}`);
 
         setSkuInput('');
         setSelectedSkuObj(null);
         setInputQty('');
+        setCheckerQty('');
         setAuditorNote('');
 
         try {
@@ -397,6 +387,7 @@
             sku: activeSkuObj.sku,
             name: activeSkuObj.name,
             input_qty: parseFloat(inputQty),
+            checker_qty: parsedCheckerQty,
             unit: unit,
             pcs_qty: convertedValues.pcs,
             karung_qty: convertedValues.koli,
@@ -461,10 +452,6 @@
       };
 
       const handleQcUpdate = async (id, currentQc, skuCode) => {
-        if (currentRole === 'auditor') {
-          alert('Akses Ditolak! Auditor tidak berhak melakukan QC check.');
-          return;
-        }
         const qcPerson = currentUser;
         const newQc = currentQc === '-' ? qcPerson : '-';
 
@@ -482,7 +469,18 @@
         }
       };
 
-      // Handler Tambah Task To-Do Baru & Simpan ke Cloud Supabase
+      // Handler Update Qty Checker Langsung di Tabel History/Record
+      const handleUpdateCheckerQtyInline = async (id, newCheckerVal, skuCode) => {
+        const parsedVal = parseFloat(newCheckerVal) || 0;
+        setAuditLogs(auditLogs.map(log => log.id === id ? { ...log, checkerQty: parsedVal } : log));
+        
+        try {
+          await supabase.from('audit_logs').update({ checker_qty: parsedVal }).eq('id', id);
+        } catch (err) {
+          console.error('Gagal update checker qty ke cloud:', err);
+        }
+      };
+
       const handleCreateTask = async (e) => {
         e.preventDefault();
         if (currentRole !== 'koordinator') {
@@ -507,11 +505,11 @@
         };
 
         setTodos([newTask, ...todos]);
-        setTodoPeriod(taskCategory); // Otomatis pindah tab kategori agar task langsung terlihat
+        setTodoPeriod(taskCategory); 
         setTaskTitle('');
         setTaskDesc('');
         setTaskDueDate('');
-        alert(`Task "${taskTitle}" berhasil diberikan kepada ${taskAssignedTo} dan tersimpan ke Cloud!`);
+        alert(`Task "${taskTitle}" berhasil diberikan dan tersimpan ke Cloud!`);
 
         try {
           await supabase.from('audit_todos').insert([{
@@ -529,7 +527,6 @@
         }
       };
 
-      // Handler Ubah Status Checkbox To-Do & Sinkronisasi ke Cloud
       const handleToggleTask = async (taskId, currentCompleted) => {
         const nextStatus = !currentCompleted;
         setTodos(todos.map(t => t.id === taskId ? { ...t, completed: nextStatus } : t));
@@ -541,7 +538,6 @@
         }
       };
 
-      // Handler Hapus Task To-Do & Hapus dari Cloud
       const handleDeleteTask = async (taskId) => {
         if (currentRole !== 'koordinator') {
           alert('Hanya Koordinator yang berhak menghapus task To-Do!');
@@ -557,11 +553,8 @@
         }
       };
 
-      // Filter & Sort To-Do Tasks
       const sortedFilteredTodos = useMemo(() => {
         let filtered = todos.filter(t => t.period === todoPeriod);
-
-        // Sorting Priority Order: High -> Medium -> Low
         const priorityWeight = { 'High': 3, 'Medium': 2, 'Low': 1 };
         
         return filtered.sort((a, b) => {
@@ -693,14 +686,13 @@
           alert('Belum ada data opname fisik untuk diexport!');
           return;
         }
-        const headers = ['No', 'Waktu Audit', 'Zona / Lokasi', 'Kode SKU Variasi', 'Nama Produk', 'Qty Input Physical', 'Satuan Input', 'Rasio Konversi', 'Physical Qty (Pcs)', 'Physical Qty (Koli)', 'System Qty (Pcs)', 'Selisih (Pcs)', 'Selisih (Koli)', 'Author (Auditor)', 'QC Check', 'Status ACC Koordinator', 'Catatan Auditor'];
+        const headers = ['No', 'Waktu Audit', 'Zona / Lokasi', 'Kode SKU Variasi', 'Nama Produk', 'Qty Auditor', 'Qty Checker', 'Satuan Input', 'Rasio Konversi', 'Physical Qty (Pcs)', 'System Qty (Pcs)', 'Selisih (Pcs)', 'Author (Auditor)', 'QC Check', 'Status ACC Koordinator', 'Catatan Auditor'];
         const rows = auditLogs.map((log, index) => {
           const systemQty = log.systemQty || 0;
           const selisihPcs = log.pcsQty - systemQty;
-          const selisihKoli = parseFloat((selisihPcs / (log.conversionRatio || 50)).toFixed(2));
           return [
-            index + 1, log.timestamp, log.zone, log.sku, log.name, log.inputQty, log.unit, log.conversionRatio, 
-            log.pcsQty, parseFloat(log.koliQty.toFixed(2)), systemQty, selisihPcs, selisihKoli, 
+            index + 1, log.timestamp, log.zone, log.sku, log.name, log.inputQty, log.checkerQty || 0, log.unit, log.conversionRatio, 
+            log.pcsQty, systemQty, selisihPcs, 
             log.auditorName, log.qcName, log.accStatus, log.note || '-'
           ];
         });
@@ -733,7 +725,6 @@
             const json = window.XLSX.utils.sheet_to_json(workbook.Sheets[firstSheetName], { defval: '', raw: false });
             
             let updatedMaster = [...masterStock];
-            
             const modeNameLabel = importMode === 'master' ? '1. Import Data Master Baru' : importMode === 'qty' ? '2. Import Qty Stok Saja' : '3. Sync & Hapus SKU Master';
 
             if (importMode === 'master') {
@@ -961,7 +952,7 @@
                     <h2 className="text-base font-semibold text-white mb-4">Form Audit Stock Opname</h2>
                     {currentRole === 'qc' ? (
                       <div className="bg-amber-950/40 border border-amber-500/30 p-4 rounded-xl text-xs text-amber-300 text-center">
-                        Akun QC bertugas melakukan verifikasi (*Check*) pada tabel sebelah kanan. Input form fisik dikunci untuk peran QC.
+                        Akun QC / Checker bertugas melakukan verifikasi (*Check*) serta dapat langsung menginput Qty Checker pada tabel sebelah kanan.
                       </div>
                     ) : (
                       <form onSubmit={handleAddAuditLog} className="space-y-4">
@@ -990,27 +981,34 @@
                           )}
                         </div>
 
-                        <div>
-                          <label className="block text-xs font-semibold uppercase text-slate-300 mb-1">3. Jumlah Fisik & Satuan</label>
-                          <div className="grid grid-cols-12 gap-2">
-                            <div className="col-span-7">
-                              <input type="number" step="any" placeholder="Qty" value={inputQty} onChange={(e) => setInputQty(e.target.value)} className="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2.5 text-base font-mono font-bold text-white" />
-                            </div>
-                            <div className="col-span-5">
-                              <select value={unit} onChange={(e) => setUnit(e.target.value)} className="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2.5 text-sm font-semibold text-white">
-                                <option value="Pcs">Pcs</option>
-                                <option value="Koli">Koli</option>
-                              </select>
-                            </div>
+                        {/* Input Qty Auditor & Qty Checker */}
+                        <div className="grid grid-cols-2 gap-3">
+                          <div>
+                            <label className="block text-xs font-semibold uppercase text-slate-300 mb-1">3. Qty Auditor</label>
+                            <input type="number" step="any" placeholder="Qty" value={inputQty} onChange={(e) => setInputQty(e.target.value)} className="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2.5 text-sm font-mono font-bold text-white" />
                           </div>
-                          <div className="mt-2 flex items-center justify-between text-xs text-slate-400 bg-slate-900/60 p-2 rounded-lg border border-slate-800">
-                            <span>1 Koli =</span>
-                            <input type="number" value={conversionRatio} onChange={(e) => setConversionRatio(Math.max(1, parseInt(e.target.value) || 1))} className="w-16 bg-slate-800 border border-slate-700 rounded text-center py-0.5 text-xs text-white font-mono" />
+                          <div>
+                            <label className="block text-xs font-semibold uppercase text-amber-300 mb-1">Qty Checker</label>
+                            <input type="number" step="any" placeholder="Opsional" value={checkerQty} onChange={(e) => setCheckerQty(e.target.value)} className="w-full bg-slate-900 border border-amber-500/40 rounded-xl px-3 py-2.5 text-sm font-mono font-bold text-white" />
+                          </div>
+                        </div>
+
+                        <div>
+                          <label className="block text-xs font-semibold uppercase text-slate-300 mb-1">Satuan & Konversi Koli</label>
+                          <div className="flex items-center space-x-2">
+                            <select value={unit} onChange={(e) => setUnit(e.target.value)} className="bg-slate-900 border border-slate-700 rounded-xl px-3 py-2.5 text-sm font-semibold text-white">
+                              <option value="Pcs">Pcs</option>
+                              <option value="Koli">Koli</option>
+                            </select>
+                            <div className="flex-1 flex items-center justify-between text-xs text-slate-400 bg-slate-900/60 p-2 rounded-xl border border-slate-800">
+                              <span>1 Koli =</span>
+                              <input type="number" value={conversionRatio} onChange={(e) => setConversionRatio(Math.max(1, parseInt(e.target.value) || 1))} className="w-16 bg-slate-800 border border-slate-700 rounded text-center py-1 text-xs text-white font-mono" />
+                              <span>Pcs</span>
+                            </div>
                           </div>
                           {inputQty > 0 && (
-                            <div className="mt-3 bg-emerald-950/30 border border-emerald-500/30 rounded-xl p-3 text-xs text-emerald-300">
-                              <span className="font-semibold block">Konversi:</span>
-                              <span className="font-mono text-sm font-bold text-white">{convertedValues.displayText}</span>
+                            <div className="mt-2 bg-emerald-950/30 border border-emerald-500/30 rounded-xl p-2.5 text-xs text-emerald-300">
+                              <span className="font-mono text-xs font-bold text-white">{convertedValues.displayText}</span>
                             </div>
                           )}
                         </div>
@@ -1038,7 +1036,8 @@
                             <tr>
                               <th className="p-3">Waktu & Zona</th>
                               <th className="p-3">SKU & Author</th>
-                              <th className="p-3 text-right">Qty & Konversi</th>
+                              <th className="p-3 text-right">Qty Auditor</th>
+                              <th className="p-3 text-right">Qty Checker</th>
                               <th className="p-3 text-center">QC Check</th>
                               <th className="p-3 text-center">ACC Koordinator</th>
                               <th className="p-3 text-center">Aksi</th>
@@ -1057,11 +1056,20 @@
                                   <div className="text-white font-bold">{log.inputQty} {log.unit}</div>
                                   <div className="text-emerald-400 text-[11px]">{log.pcsQty} Pcs</div>
                                 </td>
+                                <td className="p-3 text-right font-mono">
+                                  <input 
+                                    type="number" 
+                                    step="any" 
+                                    value={log.checkerQty !== undefined ? log.checkerQty : ''} 
+                                    onChange={(e) => handleUpdateCheckerQtyInline(log.id, e.target.value, log.sku)}
+                                    placeholder="0"
+                                    className="w-16 bg-slate-900 border border-amber-500/40 text-amber-300 font-bold text-right rounded p-1 text-xs"
+                                  />
+                                </td>
                                 <td className="p-3 text-center">
                                   <button 
                                     onClick={() => handleQcUpdate(log.id, log.qcName, log.sku)} 
-                                    disabled={currentRole === 'auditor'}
-                                    className={`px-2 py-1 rounded text-[10px] font-bold transition-all ${currentRole === 'auditor' ? 'opacity-50 cursor-not-allowed bg-slate-800 text-slate-500' : log.qcName !== '-' ? 'bg-indigo-500/20 text-indigo-300 border border-indigo-500/30' : 'bg-slate-800 text-slate-400 border border-slate-700 hover:bg-slate-700'}`}
+                                    className={`px-2 py-1 rounded text-[10px] font-bold transition-all ${log.qcName !== '-' ? 'bg-indigo-500/20 text-indigo-300 border border-indigo-500/30' : 'bg-slate-800 text-slate-400 border border-slate-700 hover:bg-slate-700'}`}
                                   >
                                     {log.qcName !== '-' ? `Checked (${log.qcName})` : 'Mark QC'}
                                   </button>
@@ -1070,7 +1078,7 @@
                                   <button 
                                     onClick={() => handleAccLog(log.id, log.accStatus, log.sku)} 
                                     disabled={currentRole !== 'koordinator'}
-                                    className={`px-2.5 py-1 rounded text-[10px] font-bold transition-all ${currentRole !== 'koordinator' ? 'opacity-50 cursor-not-allowed bg-slate-800 text-slate-500' : log.accStatus === 'APPROVED' ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30' : 'bg-amber-500/10 text-amber-400 border border-amber-500/30 hover:bg-amber-500/20'}`}
+                                    className={`px-2.5 py-1 rounded text-[10px] font-bold transition-all ${currentRole !== 'koordinator' ? 'opacity-60 cursor-not-allowed bg-slate-800 text-slate-500' : log.accStatus === 'APPROVED' ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30' : 'bg-amber-500/10 text-amber-400 border border-amber-500/30 hover:bg-amber-500/20'}`}
                                   >
                                     {log.accStatus === 'APPROVED' ? 'APPROVED ✓' : 'PENDING ACC'}
                                   </button>
@@ -1080,7 +1088,6 @@
                                     onClick={() => handleDeleteAuditLog(log.id, log.auditorName, log.sku)} 
                                     disabled={currentRole === 'qc'}
                                     className={`p-1.5 rounded-lg text-[10px] transition-all ${currentRole === 'qc' ? 'opacity-30 cursor-not-allowed bg-slate-800 text-slate-500' : 'bg-rose-500/10 text-rose-400 hover:bg-rose-500/30'}`}
-                                    title={currentRole === 'qc' ? 'Akun QC tidak diizinkan menghapus data' : 'Hapus Record'}
                                   >
                                     Hapus
                                   </button>
@@ -1139,80 +1146,46 @@
               </div>
             )}
 
-            {/* Menu To-Do Versatile & Assignment (Terhubung Cloud) */}
             {activeTab === 'todos' && (
               <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-                {/* Form Pemberian Task (Hanya Tampil Jika Peran Koordinator) */}
                 {currentRole === 'koordinator' && (
                   <div className="lg:col-span-4 bg-slate-800/90 border border-slate-700/80 rounded-2xl p-5 shadow-xl space-y-4">
                     <h3 className="text-base font-bold text-white mb-2">Buat & Beri Task To-Do Baru</h3>
                     <form onSubmit={handleCreateTask} className="space-y-3">
                       <div>
                         <label className="block text-xs font-semibold uppercase text-slate-300 mb-1">1. Nama Task</label>
-                        <input 
-                          type="text" 
-                          placeholder="misal: Cek Barcode Rak A1" 
-                          value={taskTitle} 
-                          onChange={(e) => setTaskTitle(e.target.value)} 
-                          className="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white"
-                        />
+                        <input type="text" placeholder="misal: Cek Barcode Rak A1" value={taskTitle} onChange={(e) => setTaskTitle(e.target.value)} className="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white" />
                       </div>
-
                       <div>
                         <label className="block text-xs font-semibold uppercase text-slate-300 mb-1">2. Deskripsi Task</label>
-                        <textarea 
-                          placeholder="Instruksi rinci untuk tim..." 
-                          value={taskDesc} 
-                          onChange={(e) => setTaskDesc(e.target.value)} 
-                          rows="2"
-                          className="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white"
-                        ></textarea>
+                        <textarea placeholder="Instruksi rinci..." value={taskDesc} onChange={(e) => setTaskDesc(e.target.value)} rows="2" className="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white"></textarea>
                       </div>
-
                       <div className="grid grid-cols-2 gap-2">
                         <div>
-                          <label className="block text-xs font-semibold uppercase text-slate-300 mb-1">3. Priority Type</label>
-                          <select 
-                            value={taskPriority} 
-                            onChange={(e) => setTaskPriority(e.target.value)} 
-                            className="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white"
-                          >
+                          <label className="block text-xs font-semibold uppercase text-slate-300 mb-1">Priority</label>
+                          <select value={taskPriority} onChange={(e) => setTaskPriority(e.target.value)} className="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white">
                             <option value="High">🔴 High</option>
                             <option value="Medium">🟡 Medium</option>
                             <option value="Low">🟢 Low</option>
                           </select>
                         </div>
                         <div>
-                          <label className="block text-xs font-semibold uppercase text-slate-300 mb-1">4. Target Selesai</label>
-                          <input 
-                            type="date" 
-                            value={taskDueDate} 
-                            onChange={(e) => setTaskDueDate(e.target.value)} 
-                            className="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white"
-                          />
+                          <label className="block text-xs font-semibold uppercase text-slate-300 mb-1">Target Selesai</label>
+                          <input type="date" value={taskDueDate} onChange={(e) => setTaskDueDate(e.target.value)} className="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white" />
                         </div>
                       </div>
-
                       <div className="grid grid-cols-2 gap-2">
                         <div>
-                          <label className="block text-xs font-semibold uppercase text-slate-300 mb-1">5. Kategori Task</label>
-                          <select 
-                            value={taskCategory} 
-                            onChange={(e) => setTaskCategory(e.target.value)} 
-                            className="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white"
-                          >
+                          <label className="block text-xs font-semibold uppercase text-slate-300 mb-1">Kategori</label>
+                          <select value={taskCategory} onChange={(e) => setTaskCategory(e.target.value)} className="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white">
                             <option value="Harian">Harian</option>
                             <option value="Mingguan">Mingguan</option>
                             <option value="Bulanan">Bulanan</option>
                           </select>
                         </div>
                         <div>
-                          <label className="block text-xs font-semibold uppercase text-slate-300 mb-1">Tugaskan Kepada</label>
-                          <select 
-                            value={taskAssignedTo} 
-                            onChange={(e) => setTaskAssignedTo(e.target.value)} 
-                            className="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white"
-                          >
+                          <label className="block text-xs font-semibold uppercase text-slate-300 mb-1">Tugaskan Ke</label>
+                          <select value={taskAssignedTo} onChange={(e) => setTaskAssignedTo(e.target.value)} className="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white">
                             <option value="Semua Tim">Semua Tim</option>
                             {accounts.map(acc => (
                               <option key={acc.key} value={acc.name}>{acc.name} ({acc.role.toUpperCase()})</option>
@@ -1220,44 +1193,31 @@
                           </select>
                         </div>
                       </div>
-
-                      <button type="submit" className="w-full bg-blue-600 hover:bg-blue-500 text-white font-semibold py-2.5 rounded-xl shadow-lg transition-all text-xs mt-2">
-                        + Berikan Task ke Tim
-                      </button>
+                      <button type="submit" className="w-full bg-blue-600 hover:bg-blue-500 text-white font-semibold py-2.5 rounded-xl shadow-lg transition-all text-xs mt-2">+ Berikan Task ke Tim</button>
                     </form>
                   </div>
                 )}
 
-                {/* List Task & Filtering */}
                 <div className={`${currentRole === 'koordinator' ? 'lg:col-span-8' : 'lg:col-span-12'} space-y-4`}>
                   <div className="bg-slate-800/90 border border-slate-700/80 rounded-2xl p-4 shadow-xl flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3">
                     <div>
                       <h2 className="text-base font-bold text-white">Audit Task & Planning Schedule</h2>
                       <p className="text-xs text-slate-400">Tim dapat melihat daftar tugas dan mencentang task yang telah selesai</p>
                     </div>
-
                     <div className="flex flex-wrap items-center gap-2">
-                      {/* Filter Kategori Period */}
                       <div className="flex bg-slate-900 p-1 rounded-xl border border-slate-700">
                         {['Harian', 'Mingguan', 'Bulanan'].map(p => (
                           <button key={p} onClick={() => setTodoPeriod(p)} className={`px-2.5 py-1 rounded-lg text-xs font-semibold transition-all ${todoPeriod === p ? 'bg-blue-600 text-white shadow-md' : 'text-slate-400 hover:text-white'}`}>{p}</button>
                         ))}
                       </div>
-
-                      {/* Button Sort Priority */}
-                      <button 
-                        onClick={() => setTodoPrioritySort(prev => prev === 'DESC' ? 'ASC' : 'DESC')}
-                        className="bg-slate-900 hover:bg-slate-700 text-xs font-semibold px-3 py-1.5 rounded-xl border border-slate-700 text-indigo-300 flex items-center space-x-1"
-                      >
-                        <span>Urut Priority: {todoPrioritySort === 'DESC' ? 'High → Low' : 'Low → High'}</span>
+                      <button onClick={() => setTodoPrioritySort(prev => prev === 'DESC' ? 'ASC' : 'DESC')} className="bg-slate-900 hover:bg-slate-700 text-xs font-semibold px-3 py-1.5 rounded-xl border border-slate-700 text-indigo-300">
+                        Urut Priority: {todoPrioritySort === 'DESC' ? 'High → Low' : 'Low → High'}
                       </button>
                     </div>
                   </div>
 
                   {sortedFilteredTodos.length === 0 ? (
-                    <div className="bg-slate-800/90 border border-slate-700/80 rounded-2xl p-8 text-center text-xs text-slate-400">
-                      Tidak ada task {todoPeriod.toLowerCase()} yang tersedia
-                    </div>
+                    <div className="bg-slate-800/90 border border-slate-700/80 rounded-2xl p-8 text-center text-xs text-slate-400">Tidak ada task {todoPeriod.toLowerCase()} yang tersedia</div>
                   ) : (
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                       {sortedFilteredTodos.map(task => (
@@ -1265,37 +1225,20 @@
                           <div>
                             <div className="flex items-start justify-between gap-2">
                               <div className="flex items-start space-x-2">
-                                <input 
-                                  type="checkbox" 
-                                  checked={task.completed} 
-                                  onChange={() => handleToggleTask(task.id, task.completed)} 
-                                  className="w-4 h-4 accent-blue-600 mt-1 cursor-pointer" 
-                                />
+                                <input type="checkbox" checked={task.completed} onChange={() => handleToggleTask(task.id, task.completed)} className="w-4 h-4 accent-blue-600 mt-1 cursor-pointer" />
                                 <h4 className={`text-sm font-semibold leading-tight ${task.completed ? 'line-through text-slate-500' : 'text-white'}`}>{task.title}</h4>
                               </div>
-                              <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${
-                                task.priority === 'High' ? 'bg-rose-500/20 text-rose-300 border border-rose-500/30' :
-                                task.priority === 'Medium' ? 'bg-amber-500/20 text-amber-300 border border-amber-500/30' :
-                                'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
-                              }`}>
-                                {task.priority}
-                              </span>
+                              <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${task.priority === 'High' ? 'bg-rose-500/20 text-rose-300' : task.priority === 'Medium' ? 'bg-amber-500/20 text-amber-300' : 'bg-emerald-500/20 text-emerald-300'}`}>{task.priority}</span>
                             </div>
                             <p className="text-xs text-slate-400 mt-2 pl-6 leading-relaxed">{task.description}</p>
                           </div>
-
                           <div className="pt-2 border-t border-slate-700/60 flex justify-between items-center text-[11px] text-slate-400">
                             <div>
                               <span>Target: <strong className="text-slate-200">{task.dueDate}</strong></span>
                               <span className="block text-indigo-300">Untuk: {task.assignedTo || 'Semua Tim'}</span>
                             </div>
                             {currentRole === 'koordinator' && (
-                              <button 
-                                onClick={() => handleDeleteTask(task.id)}
-                                className="text-rose-400 hover:text-rose-300 font-semibold"
-                              >
-                                Hapus
-                              </button>
+                              <button onClick={() => handleDeleteTask(task.id)} className="text-rose-400 hover:text-rose-300 font-semibold">Hapus</button>
                             )}
                           </div>
                         </div>
@@ -1337,13 +1280,7 @@
                   <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3">
                     <h3 className="text-sm font-semibold text-white">Tabel Perbandingan Stok System vs Stok Fisik</h3>
                     <div className="w-full sm:w-72">
-                      <input 
-                        type="text" 
-                        placeholder="Cari SKU Variasi / Nama..." 
-                        value={dashboardSearch} 
-                        onChange={(e) => setDashboardSearch(e.target.value)} 
-                        className="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-blue-500"
-                      />
+                      <input type="text" placeholder="Cari SKU Variasi / Nama..." value={dashboardSearch} onChange={(e) => setDashboardSearch(e.target.value)} className="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white" />
                     </div>
                   </div>
 
@@ -1353,18 +1290,10 @@
                         <tr>
                           <th className="p-3">SKU Variasi</th>
                           <th className="p-3">Nama & Detail Produk</th>
-                          <th className="p-3 text-right cursor-pointer hover:text-white" onClick={() => handleSort('systemQty')}>
-                            System Qty {sortConfig.key === 'systemQty' ? (sortConfig.direction === 'asc' ? '▲' : '▼') : '↕'}
-                          </th>
-                          <th className="p-3 text-right cursor-pointer hover:text-white" onClick={() => handleSort('physicalQty')}>
-                            Fisik (Pcs) {sortConfig.key === 'physicalQty' ? (sortConfig.direction === 'asc' ? '▲' : '▼') : '↕'}
-                          </th>
-                          <th className="p-3 text-right cursor-pointer hover:text-white" onClick={() => handleSort('discrepancyPcs')}>
-                            Selisih Pcs {sortConfig.key === 'discrepancyPcs' ? (sortConfig.direction === 'asc' ? '▲' : '▼') : '↕'}
-                          </th>
-                          <th className="p-3 text-center cursor-pointer hover:text-white" onClick={() => handleSort('status')}>
-                            Status {sortConfig.key === 'status' ? (sortConfig.direction === 'asc' ? '▲' : '▼') : '↕'}
-                          </th>
+                          <th className="p-3 text-right cursor-pointer" onClick={() => handleSort('systemQty')}>System Qty</th>
+                          <th className="p-3 text-right cursor-pointer" onClick={() => handleSort('physicalQty')}>Fisik (Pcs)</th>
+                          <th className="p-3 text-right cursor-pointer" onClick={() => handleSort('discrepancyPcs')}>Selisih Pcs</th>
+                          <th className="p-3 text-center cursor-pointer" onClick={() => handleSort('status')}>Status</th>
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-slate-800">
@@ -1398,7 +1327,7 @@
                       <div className="flex items-center justify-between mb-4">
                         <div>
                           <h2 className="text-base font-bold text-white">Download Template Excel Native (.xls / .xlsx)</h2>
-                          <p className="text-xs text-slate-400">Unduh file template berformat rapi (Header Biru, Border Tegas & Zebra Striping)</p>
+                          <p className="text-xs text-slate-400">Unduh file template berformat rapi</p>
                         </div>
                         <span className="bg-emerald-500/10 text-emerald-400 border border-emerald-500/30 text-xs px-3 py-1 rounded-full font-mono font-bold">
                           {masterStock.length} SKU Master Tersedia
@@ -1408,24 +1337,21 @@
                       <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mt-4">
                         <div className="bg-slate-900/80 border border-indigo-500/30 rounded-xl p-4 flex flex-col justify-between">
                           <div>
-                            <span className="text-indigo-300 text-xs font-bold block mb-2">Template 1: Data Master (3 Baris Contoh)</span>
-                            <p className="text-[11px] text-slate-400 mb-3 leading-relaxed">Berisi contoh format minimum untuk import data master baru agar form tetap bersih.</p>
+                            <span className="text-indigo-300 text-xs font-bold block mb-2">Template 1: Data Master Baru</span>
                           </div>
                           <button onClick={handleDownloadMasterTemplate} className="w-full bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold py-2.5 rounded-lg shadow-md transition-all">Download Template Master</button>
                         </div>
 
                         <div className="bg-slate-900/80 border border-blue-500/30 rounded-xl p-4 flex flex-col justify-between">
                           <div>
-                            <span className="text-blue-300 text-xs font-bold block mb-2">Template 2: Qty Stok ({masterStock.length} SKU)</span>
-                            <p className="text-[11px] text-slate-400 mb-3 leading-relaxed">Memuat seluruh SKU untuk memperbarui Qty System & Rasio Koli.</p>
+                            <span className="text-blue-300 text-xs font-bold block mb-2">Template 2: Qty Stok</span>
                           </div>
                           <button onClick={handleDownloadQtyTemplate} className="w-full bg-blue-600 hover:bg-blue-500 text-white text-xs font-semibold py-2.5 rounded-lg shadow-md transition-all">Download Template Qty</button>
                         </div>
 
                         <div className="bg-slate-900/80 border border-emerald-500/30 rounded-xl p-4 flex flex-col justify-between">
                           <div>
-                            <span className="text-emerald-300 text-xs font-bold block mb-2">Template 3: Master Sync & Hapus SKU</span>
-                            <p className="text-[11px] text-slate-400 mb-3 leading-relaxed">Memuat seluruh SKU untuk edit data master atau menghapus baris SKU yang salah.</p>
+                            <span className="text-emerald-300 text-xs font-bold block mb-2">Template 3: Master Sync & Hapus</span>
                           </div>
                           <button onClick={handleDownloadMasterSyncTemplate} className="w-full bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold py-2.5 rounded-lg shadow-md transition-all">Download Template Sync/Hapus</button>
                         </div>
@@ -1434,8 +1360,6 @@
 
                     <div className="bg-slate-800/90 border border-slate-700/80 rounded-2xl p-6 shadow-xl relative">
                       <h2 className="text-base font-bold text-white mb-2">Import File Excel</h2>
-                      <p className="text-xs text-slate-400 mb-4">Pilih opsi import sesuai template yang Anda gunakan</p>
-
                       <div className="grid grid-cols-1 md:grid-cols-3 gap-2 bg-slate-900 p-1.5 rounded-xl border border-slate-700 mb-4">
                         <button onClick={() => setImportMode('master')} className={`py-2 px-2 text-[11px] font-semibold rounded-lg transition-all ${importMode === 'master' ? 'bg-blue-600 text-white shadow-md' : 'text-slate-400 hover:text-white'}`}>1. Import Data Master Baru</button>
                         <button onClick={() => setImportMode('qty')} className={`py-2 px-2 text-[11px] font-semibold rounded-lg transition-all ${importMode === 'qty' ? 'bg-blue-600 text-white shadow-md' : 'text-slate-400 hover:text-white'}`}>2. Import Qty Stok Saja</button>
@@ -1445,9 +1369,7 @@
                       <div className="border-2 border-dashed border-slate-700 rounded-xl p-6 text-center hover:border-blue-500 transition-colors">
                         <input type="file" accept=".xlsx, .xls, .csv" onChange={handleFileUpload} className="hidden" id="excel-upload-input" />
                         <label htmlFor="excel-upload-input" className="cursor-pointer flex flex-col items-center">
-                          <span className="text-sm font-semibold text-blue-400">
-                            Upload Excel: {importMode === 'master' ? 'Data Master Baru' : importMode === 'qty' ? 'Qty Stok Saja' : 'Sync & Hapus SKU Master'}
-                          </span>
+                          <span className="text-sm font-semibold text-blue-400">Upload Excel</span>
                           <span className="text-xs text-slate-500 mt-1">Format .xlsx, .xls, atau .csv didukung</span>
                         </label>
                       </div>
@@ -1467,19 +1389,14 @@
 
                     <div className="bg-slate-800/90 border border-slate-700/80 rounded-2xl p-6 shadow-xl">
                       <h2 className="text-base font-bold text-white mb-1">Export Laporan Opname ke Excel</h2>
-                      <p className="text-xs text-slate-400 mb-4">Unduh hasil audit fisik terlengkap dengan konversi otomatis Pcs ke Koli & Varian</p>
-                      <button onClick={handleExportToExcel} className="w-full bg-emerald-600 hover:bg-emerald-500 text-white font-semibold py-3 rounded-xl shadow-lg shadow-emerald-600/35 transition-all">Download Laporan Excel Bergaya (.xls / .xlsx)</button>
+                      <button onClick={handleExportToExcel} className="w-full bg-emerald-600 hover:bg-emerald-500 text-white font-semibold py-3 rounded-xl shadow-lg transition-all mt-3">Download Laporan Excel Bergaya (.xlsx)</button>
                     </div>
                   </>
                 ) : (
                   <div className="bg-slate-800/90 border border-slate-700/80 rounded-2xl p-6 shadow-xl space-y-4">
                     <h2 className="text-base font-bold text-white">Histori File Excel yang Di-import</h2>
-                    <p className="text-xs text-slate-400">Catatan riwayat file template yang pernah diunggah beserta waktu dan modus importnya</p>
-
                     {importHistory.length === 0 ? (
-                      <div className="text-center py-8 text-xs text-slate-500 border border-dashed border-slate-700 rounded-xl">
-                        Belum ada file Excel yang di-import pada sesi ini
-                      </div>
+                      <div className="text-center py-8 text-xs text-slate-500 border border-dashed border-slate-700 rounded-xl">Belum ada file Excel yang di-import pada sesi ini</div>
                     ) : (
                       <div className="overflow-x-auto">
                         <table className="w-full text-left text-xs">
@@ -1488,7 +1405,7 @@
                               <th className="p-3">Waktu Import</th>
                               <th className="p-3">Nama File Excel</th>
                               <th className="p-3">Mode / Menu Import</th>
-                              <th className="p-3">Uploader (Koordinator)</th>
+                              <th className="p-3">Uploader</th>
                             </tr>
                           </thead>
                           <tbody className="divide-y divide-slate-800">
@@ -1496,7 +1413,7 @@
                               <tr key={imp.id} className="hover:bg-slate-700/30">
                                 <td className="p-3 font-mono text-slate-300">{imp.timestamp}</td>
                                 <td className="p-3 font-semibold text-blue-400">{imp.fileName}</td>
-                                <td className="p-3"><span className="px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">{imp.mode}</span></td>
+                                <td className="p-3"><span className="px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-500/20 text-emerald-300">{imp.mode}</span></td>
                                 <td className="p-3 text-slate-300">{imp.uploader}</td>
                               </tr>
                             ))}
@@ -1515,53 +1432,28 @@
                   <div className="flex justify-between items-center">
                     <div>
                       <h2 className="text-base font-bold text-white">Tambah Akun Tim Baru</h2>
-                      <p className="text-xs text-slate-400">Buat akun Auditor atau QC tambahan (Maksimal 10 Akun).</p>
                     </div>
-                    <span className="bg-blue-600/20 text-blue-400 border border-blue-500/30 text-xs px-3 py-1 rounded-full font-mono font-bold">
-                      {accounts.length} / 10 Akun
-                    </span>
+                    <span className="bg-blue-600/20 text-blue-400 border border-blue-500/30 text-xs px-3 py-1 rounded-full font-mono font-bold">{accounts.length} / 10 Akun</span>
                   </div>
 
                   <form onSubmit={handleAddAccount} className="grid grid-cols-1 md:grid-cols-3 gap-3 pt-2">
                     <div>
                       <label className="block text-[11px] text-slate-300 mb-1">Nama Tampilan User</label>
-                      <input 
-                        type="text" 
-                        placeholder="misal: Auditor 3" 
-                        value={newAccName} 
-                        onChange={(e) => setNewAccName(e.target.value)} 
-                        className="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-xs text-white"
-                      />
+                      <input type="text" placeholder="misal: Auditor 3" value={newAccName} onChange={(e) => setNewAccName(e.target.value)} className="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-xs text-white" />
                     </div>
                     <div>
                       <label className="block text-[11px] text-slate-300 mb-1">Peran Akses</label>
-                      <select 
-                        value={newAccRole} 
-                        onChange={(e) => setNewAccRole(e.target.value)} 
-                        className="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-xs text-white"
-                      >
+                      <select value={newAccRole} onChange={(e) => setNewAccRole(e.target.value)} className="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-xs text-white">
                         <option value="auditor">Auditor (Input Fisik)</option>
                         <option value="qc">Checker / QC (Verifikasi)</option>
                       </select>
                     </div>
                     <div>
                       <label className="block text-[11px] text-slate-300 mb-1">Password Akses</label>
-                      <input 
-                        type="password" 
-                        placeholder="Password..." 
-                        value={newAccPass} 
-                        onChange={(e) => setNewAccPass(e.target.value)} 
-                        className="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-xs text-white font-mono"
-                      />
+                      <input type="password" placeholder="Password..." value={newAccPass} onChange={(e) => setNewAccPass(e.target.value)} className="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-xs text-white font-mono" />
                     </div>
                     <div className="md:col-span-3 flex justify-end">
-                      <button 
-                        type="submit" 
-                        disabled={accounts.length >= 10}
-                        className="bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white text-xs font-semibold px-4 py-2.5 rounded-xl transition-all shadow-md"
-                      >
-                        + Tambah Akun Baru
-                      </button>
+                      <button type="submit" disabled={accounts.length >= 10} className="bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white text-xs font-semibold px-4 py-2.5 rounded-xl transition-all shadow-md">+ Tambah Akun Baru</button>
                     </div>
                   </form>
                 </div>
@@ -1573,59 +1465,22 @@
                       <div key={acc.key} className="bg-slate-900 border border-slate-700/80 rounded-xl p-4 space-y-3">
                         <div className="flex justify-between items-center">
                           <span className="text-xs font-bold text-blue-400 uppercase">Peran: {acc.role}</span>
-                          <div className="flex items-center space-x-2">
-                            <span className="text-[10px] text-slate-500 font-mono">Key: {acc.key}</span>
-                            {acc.key !== 'koordinator' && (
-                              <button 
-                                onClick={() => handleDeleteAccount(acc.key)}
-                                className="bg-rose-500/10 hover:bg-rose-500/30 text-rose-400 border border-rose-500/30 text-[10px] px-2 py-0.5 rounded transition-all"
-                              >
-                                Hapus
-                              </button>
-                            )}
-                          </div>
+                          {acc.key !== 'koordinator' && (
+                            <button onClick={() => handleDeleteAccount(acc.key)} className="bg-rose-500/10 hover:bg-rose-500/30 text-rose-400 border border-rose-500/30 text-[10px] px-2 py-0.5 rounded transition-all">Hapus</button>
+                          )}
                         </div>
                         <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                           <div>
-                            <label className="block text-[11px] text-slate-400 mb-1">Nama Tampilan / User</label>
-                            <input 
-                              type="text" 
-                              value={editAccountState[acc.key]?.name || ''} 
-                              placeholder={acc.name}
-                              onChange={(e) => {
-                                const val = e.target.value;
-                                setEditAccountState(prev => ({
-                                  ...prev,
-                                  [acc.key]: { ...prev[acc.key], name: val }
-                                }));
-                              }} 
-                              className="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-xs text-white"
-                            />
+                            <label className="block text-[11px] text-slate-400 mb-1">Nama Tampilan</label>
+                            <input type="text" value={editAccountState[acc.key]?.name || ''} placeholder={acc.name} onChange={(e) => { const val = e.target.value; setEditAccountState(prev => ({ ...prev, [acc.key]: { ...prev[acc.key], name: val } })); }} className="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-xs text-white" />
                           </div>
                           <div>
-                            <label className="block text-[11px] text-slate-400 mb-1">Password Baru (Opsional)</label>
-                            <input 
-                              type="password" 
-                              placeholder="Kosongkan jika tetap" 
-                              value={editAccountState[acc.key]?.pass || ''} 
-                              onChange={(e) => {
-                                const val = e.target.value;
-                                setEditAccountState(prev => ({
-                                  ...prev,
-                                  [acc.key]: { ...prev[acc.key], pass: val }
-                                }));
-                              }} 
-                              className="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-xs text-white font-mono"
-                            />
+                            <label className="block text-[11px] text-slate-400 mb-1">Password Baru</label>
+                            <input type="password" placeholder="Kosongkan jika tetap" value={editAccountState[acc.key]?.pass || ''} onChange={(e) => { const val = e.target.value; setEditAccountState(prev => ({ ...prev, [acc.key]: { ...prev[acc.key], pass: val } })); }} className="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-xs text-white font-mono" />
                           </div>
                         </div>
                         <div className="flex justify-end">
-                          <button 
-                            onClick={() => handleSaveAccountSettings(acc.key)}
-                            className="bg-blue-600 hover:bg-blue-500 text-white text-xs font-semibold px-4 py-2 rounded-lg transition-all shadow-md"
-                          >
-                            Simpan Perubahan
-                          </button>
+                          <button onClick={() => handleSaveAccountSettings(acc.key)} className="bg-blue-600 hover:bg-blue-500 text-white text-xs font-semibold px-4 py-2 rounded-lg transition-all shadow-md">Simpan Perubahan</button>
                         </div>
                       </div>
                     ))}
