@@ -97,20 +97,36 @@
       useEffect(() => {
         fetchCloudData();
 
-        // Realtime subscription agar data opname langsung tersinkronisasi lintas akun tanpa refresh
-        const channel = supabase
-          .channel('schema-db-changes')
-          .on(
-            'postgres_changes',
-            { event: '*', schema: 'public', table: 'audit_logs' },
-            () => {
-              fetchAuditLogs();
-            }
-          )
-          .subscribe();
+        let channel = null;
+        try {
+          if (typeof WebSocket !== 'undefined') {
+            channel = supabase
+              .channel('schema-db-changes')
+              .on(
+                'postgres_changes',
+                { event: '*', schema: 'public', table: 'audit_logs' },
+                () => {
+                  fetchAuditLogs();
+                }
+              )
+              .subscribe((status, err) => {
+                if (status === 'CHANNEL_ERROR') {
+                  console.warn('Realtime WebSocket ditolak oleh sistem sandbox.');
+                }
+              });
+          }
+        } catch (err) {
+          console.warn('WebSocket tidak didukung atau diblokir di lingkungan ini:', err);
+        }
 
         return () => {
-          supabase.removeChannel(channel);
+          if (channel) {
+            try {
+              supabase.removeChannel(channel);
+            } catch (e) {
+              // Abaikan error penutupan socket
+            }
+          }
         };
       }, []);
 
@@ -413,7 +429,7 @@
         setAuditorNote('');
 
         try {
-          const { error } = await supabase.from('audit_logs').insert([{
+          const payload = {
             id: newLogId,
             timestamp: currentTimestamp,
             zone: zoneToSave || 'Zona General',
@@ -424,13 +440,25 @@
             pcs_qty: convertedValues.pcs,
             karung_qty: convertedValues.koli,
             conversion_ratio: parseFloat(conversionRatio),
-            system_qty: activeSkuObj.systemQty || 0,
             auditor_note: auditorNote,
             auditor_name: currentUser,
             qc_name: '-',
             acc_status: 'PENDING',
             acc_by: '-'
-          }]);
+          };
+
+          if (activeSkuObj.systemQty !== undefined) {
+            payload.system_qty = activeSkuObj.systemQty || 0;
+          }
+
+          let { error } = await supabase.from('audit_logs').insert([payload]);
+
+          if (error && (error.message.includes('system_qty') || error.message.includes('conversion_ratio'))) {
+            delete payload.system_qty;
+            delete payload.conversion_ratio;
+            const fallbackRes = await supabase.from('audit_logs').insert([payload]);
+            error = fallbackRes.error;
+          }
 
           if (error) {
             console.error('Error insert audit log Supabase:', error.message);
