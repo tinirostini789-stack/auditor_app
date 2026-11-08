@@ -59,7 +59,7 @@
       const [auditLogs, setAuditLogs] = useState([]);
       const [actionHistory, setActionHistory] = useState([]); 
       const [importHistory, setImportHistory] = useState([]); 
-      const [exportSubTab, setExportSubTab] = useState('my_history'); 
+      const [exportSubTab, setExportSubTab] = useState('upload'); 
 
       const [todos, setTodos] = useState([]);
       const [todoPeriod, setTodoPeriod] = useState('Harian');
@@ -84,7 +84,6 @@
       const [skuInput, setSkuInput] = useState('');
       const [selectedSkuObj, setSelectedSkuObj] = useState(null);
       const [inputQty, setInputQty] = useState('');
-      const [qcInputQty, setQcInputQty] = useState('');
       const [unit, setUnit] = useState('Pcs');
       const [conversionRatio, setConversionRatio] = useState(50);
       const [auditorNote, setAuditorNote] = useState('');
@@ -97,84 +96,26 @@
 
       useEffect(() => {
         fetchCloudData();
-
-        // Listener Real-time Supabase untuk menyelaraskan data di seluruh akun secara langsung
-        const channel = supabase
-          .channel('schema-db-changes')
-          .on(
-            'postgres_changes',
-            { event: '*', schema: 'public', table: 'audit_logs' },
-            () => {
-              fetchAuditLogs();
-            }
-          )
-          .subscribe();
-
-        return () => {
-          supabase.removeChannel(channel);
-        };
       }, []);
 
-      const logActionHistory = async (type, sku, details) => {
+      const logActionHistory = (type, sku, details) => {
         const timestamp = new Date().toLocaleString('id-ID');
-        const historyId = Date.now().toString() + Math.random().toString(36).substr(2, 4);
         const newHistoryItem = {
-          id: historyId,
+          id: Date.now().toString() + Math.random().toString(36).substr(2, 4),
           timestamp,
-          actor: currentUser || 'System',
-          role: currentRole || 'koordinator',
+          actor: currentUser,
+          role: currentRole,
           type,
           sku,
           details
         };
         setActionHistory(prev => [newHistoryItem, ...prev]);
-
-        try {
-          await supabase.from('audit_action_histories').insert([{
-            id: historyId,
-            timestamp,
-            actor: currentUser || 'System',
-            role: currentRole || 'koordinator',
-            type,
-            sku,
-            details
-          }]);
-        } catch (err) {
-          console.error('Gagal menyimpan action history ke cloud:', err);
-        }
-      };
-
-      const fetchAuditLogs = async () => {
-        const { data: logData, error: logError } = await supabase.from('audit_logs').select('*').order('created_at', { ascending: false });
-        if (!logError && logData) {
-          const formattedLogs = logData.map(log => ({
-            id: String(log.id),
-            timestamp: log.timestamp || new Date().toLocaleString('id-ID'),
-            zone: log.zone || 'Zona General',
-            sku: log.sku,
-            name: log.name || 'SKU Item',
-            inputQty: parseFloat(log.input_qty) || 0,
-            qcInputQty: log.qc_input_qty !== undefined && log.qc_input_qty !== null ? parseFloat(log.qc_input_qty) : null,
-            unit: log.unit || 'Pcs',
-            pcsQty: parseFloat(log.pcs_qty) || 0,
-            koliQty: parseFloat(log.karung_qty) || 0,
-            conversionRatio: parseFloat(log.conversion_ratio) || 50,
-            systemQty: parseFloat(log.system_qty) || 0,
-            note: log.auditor_note || '',
-            auditorName: log.auditor_name || 'System / Umum',
-            qcName: log.qc_name || '-',
-            accStatus: log.acc_status || 'PENDING',
-            accBy: log.acc_by || '-'
-          }));
-          setAuditLogs(formattedLogs);
-        }
       };
 
       const fetchCloudData = async () => {
         try {
           setDbStatus('Memuat data cloud...');
           
-          // 1. Load Accounts
           const { data: accData, error: accError } = await supabase.from('app_accounts').select('*');
           if (!accError && accData && accData.length > 0) {
             const formattedAccs = accData.map(a => ({
@@ -195,7 +136,7 @@
             }
           }
 
-          // 2. Load Todos
+          // Sinkronisasi data To-Do dari Supabase
           const { data: todoData, error: todoError } = await supabase.from('audit_todos').select('*');
           if (!todoError && todoData && todoData.length > 0) {
             const formattedTodos = todoData.map(t => ({
@@ -209,9 +150,20 @@
               completed: t.completed
             }));
             setTodos(formattedTodos);
+          } else if (!todoData || todoData.length === 0) {
+            const initialTodos = [
+              { id: 't1', title: 'Audit Fisik Sepatu Sneaker RAK A1-A3', description: 'Cek fisik dan pastikan label barcode sesuai', period: 'Harian', priority: 'High', dueDate: '2026-11-08', assignedTo: 'Semua Tim', completed: false },
+              { id: 't2', title: 'Verifikasi Stok Koli Kaos Kaki', description: 'Pastikan 1 Koli isi tepat 100 Pcs', period: 'Mingguan', priority: 'Medium', dueDate: '2026-11-12', assignedTo: 'Auditor 1', completed: true },
+              { id: 't3', title: 'Opname Total Area Bulk Gudang C', description: 'Rekonsiliasi akhir bulan barang berat', period: 'Bulanan', priority: 'High', dueDate: '2026-11-30', assignedTo: 'Auditor 2', completed: false }
+            ];
+            for (const t of initialTodos) {
+              await supabase.from('audit_todos').upsert({
+                id: t.id, title: t.title, description: t.description, priority: t.priority, period: t.period, due_date: t.dueDate, assigned_to: t.assignedTo, completed: t.completed
+              }, { onConflict: 'id' });
+            }
+            setTodos(initialTodos);
           }
 
-          // 3. Load Master Skus
           const { data: skuData, error: skuError } = await supabase.from('master_skus').select('*');
           if (!skuError && skuData && skuData.length > 0) {
             const formattedMaster = skuData.map(item => ({
@@ -232,35 +184,27 @@
             setMasterStock(formattedMaster);
           }
 
-          // 4. Load Audit Logs
-          await fetchAuditLogs();
-
-          // 5. Load Import Histories
-          const { data: impData, error: impError } = await supabase.from('audit_import_histories').select('*').order('created_at', { ascending: false });
-          if (!impError && impData && impData.length > 0) {
-            const formattedImps = impData.map(i => ({
-              id: i.id,
-              timestamp: i.timestamp,
-              fileName: i.file_name,
-              mode: i.mode,
-              uploader: i.uploader
+          const { data: logData, error: logError } = await supabase.from('audit_logs').select('*').order('timestamp', { ascending: false });
+          if (!logError && logData && logData.length > 0) {
+            const formattedLogs = logData.map(log => ({
+              id: log.id,
+              timestamp: log.timestamp,
+              zone: log.zone,
+              sku: log.sku,
+              name: log.name,
+              inputQty: log.input_qty,
+              unit: log.unit,
+              pcsQty: log.pcs_qty,
+              koliQty: log.karung_qty,
+              conversionRatio: log.conversion_ratio || 50,
+              systemQty: 0,
+              note: log.auditor_note,
+              auditorName: log.auditor_name || 'System / Umum',
+              qcName: log.qc_name || '-',
+              accStatus: log.acc_status || 'PENDING',
+              accBy: log.acc_by || '-'
             }));
-            setImportHistory(formattedImps);
-          }
-
-          // 6. Load Action Histories
-          const { data: actData, error: actError } = await supabase.from('audit_action_histories').select('*').order('created_at', { ascending: false });
-          if (!actError && actData && actData.length > 0) {
-            const formattedActs = actData.map(a => ({
-              id: a.id,
-              timestamp: a.timestamp,
-              actor: a.actor,
-              role: a.role,
-              type: a.type,
-              sku: a.sku,
-              details: a.details
-            }));
-            setActionHistory(formattedActs);
+            setAuditLogs(formattedLogs);
           }
 
           setDbStatus('🟢 Terhubung ke Cloud Supabase');
@@ -304,20 +248,30 @@
         }
 
         const newKey = `user_${Date.now()}`;
-        const newAcc = { key: newKey, name: newAccName, role: newAccRole, pass: newAccPass };
+        const newAcc = {
+          key: newKey,
+          name: newAccName,
+          role: newAccRole,
+          pass: newAccPass
+        };
 
-        setAccounts([...accounts, newAcc]);
+        const updated = [...accounts, newAcc];
+        setAccounts(updated);
         setEditAccountState(prev => ({ ...prev, [newKey]: { name: newAccName, pass: '' } }));
 
         try {
           await supabase.from('app_accounts').insert([{
-            account_key: newKey, account_name: newAccName, role: newAccRole, password: newAccPass
+            account_key: newKey,
+            account_name: newAccName,
+            role: newAccRole,
+            password: newAccPass
           }]);
           setNewAccName('');
           setNewAccPass('');
-          alert('Akun baru berhasil tersimpan ke Supabase!');
+          alert('Akun baru berhasil ditambahkan dan tersimpan ke Cloud Supabase!');
         } catch (err) {
           console.error('Gagal tambah akun:', err);
+          alert('Gagal menambah akun ke database cloud.');
         }
       };
 
@@ -328,10 +282,12 @@
         }
         if (!confirm('Apakah Anda yakin ingin menghapus akun ini?')) return;
 
-        setAccounts(accounts.filter(a => a.key !== key));
+        const updated = accounts.filter(a => a.key !== key);
+        setAccounts(updated);
 
         try {
           await supabase.from('app_accounts').delete().eq('account_key', key);
+          alert('Akun berhasil dihapus dari cloud!');
         } catch (err) {
           console.error('Gagal hapus akun:', err);
         }
@@ -344,15 +300,26 @@
         const newName = currentEdit.name ? currentEdit.name : targetAcc.name;
         const newPass = currentEdit.pass ? currentEdit.pass : targetAcc.pass;
 
-        setAccounts(accounts.map(acc => acc.key === key ? { ...acc, name: newName, pass: newPass } : acc));
+        const updated = accounts.map(acc => {
+          if (acc.key === key) {
+            return { ...acc, name: newName, pass: newPass };
+          }
+          return acc;
+        });
+
+        setAccounts(updated);
 
         try {
           await supabase.from('app_accounts').upsert({
-            account_key: key, account_name: newName, role: targetAcc.role, password: newPass
+            account_key: key,
+            account_name: newName,
+            role: targetAcc.role,
+            password: newPass
           }, { onConflict: 'account_key' });
-          alert('Perubahan akun tersimpan ke Supabase!');
+          alert('Perubahan akun berhasil disimpan ke Cloud Supabase!');
         } catch (err) {
-          console.error('Gagal update akun:', err);
+          console.error('Gagal update akun ke cloud:', err);
+          alert('Gagal menyimpan ke cloud database.');
         }
       };
 
@@ -382,19 +349,18 @@
       const handleAddAuditLog = async (e) => {
         e.preventDefault();
         if (currentRole === 'qc') {
-          alert('Akun QC tidak diizinkan menginput opname fisik baru.');
+          alert('Akun QC tidak diizinkan untuk menginput data audit fisik.');
           return;
         }
         if (!skuInput || !inputQty || parseFloat(inputQty) <= 0) {
-          alert('Mohon isi SKU dan Qty yang valid!');
+          alert('Mohon isi SKU dan Jumlah Qty yang valid!');
           return;
         }
         const zoneToSave = selectedZone === 'Lainnya...' ? customZone : selectedZone;
-        const activeSkuObj = selectedSkuObj || masterStock.find(m => m.sku.toLowerCase() === skuInput.toLowerCase()) || { sku: skuInput, name: 'SKU Item Baru', systemQty: 0 };
+        const activeSkuObj = selectedSkuObj || { sku: skuInput, name: 'SKU Non-Master / Item Baru', systemQty: 0 };
 
         const newLogId = Date.now().toString();
         const currentTimestamp = new Date().toLocaleString('id-ID');
-        const parsedQcInputQty = qcInputQty !== '' ? parseFloat(qcInputQty) : null;
 
         const newLog = {
           id: newLogId,
@@ -403,7 +369,6 @@
           sku: activeSkuObj.sku,
           name: activeSkuObj.name,
           inputQty: parseFloat(inputQty),
-          qcInputQty: parsedQcInputQty,
           unit: unit,
           pcsQty: convertedValues.pcs,
           koliQty: convertedValues.koli,
@@ -416,24 +381,22 @@
           accBy: '-'
         };
 
-        setAuditLogs(prev => [newLog, ...prev]);
-        await logActionHistory('TAMBAH_SKU', activeSkuObj.sku, `Input ${inputQty} ${unit} (${convertedValues.pcs} Pcs) di ${zoneToSave || 'Zona General'}`);
+        setAuditLogs([newLog, ...auditLogs]);
+        logActionHistory('TAMBAH_SKU', activeSkuObj.sku, `Input ${inputQty} ${unit} (${convertedValues.pcs} Pcs) di ${zoneToSave || 'Zona General'}`);
 
         setSkuInput('');
         setSelectedSkuObj(null);
         setInputQty('');
-        setQcInputQty('');
         setAuditorNote('');
 
         try {
-          const { error } = await supabase.from('audit_logs').insert([{
+          await supabase.from('audit_logs').insert([{
             id: newLogId,
             timestamp: currentTimestamp,
             zone: zoneToSave || 'Zona General',
             sku: activeSkuObj.sku,
             name: activeSkuObj.name,
             input_qty: parseFloat(inputQty),
-            qc_input_qty: parsedQcInputQty,
             unit: unit,
             pcs_qty: convertedValues.pcs,
             karung_qty: convertedValues.koli,
@@ -444,175 +407,163 @@
             acc_status: 'PENDING',
             acc_by: '-'
           }]);
-
-          if (error) {
-            console.error('Error insert audit log Supabase:', error.message);
-            alert('Gagal menyimpan ke Cloud Supabase: ' + error.message);
-          } else {
-            await fetchAuditLogs();
-          }
         } catch (err) {
-          console.error('Error insert audit log ke Supabase:', err);
+          console.error('Error cloud database:', err);
         }
       };
 
       const handleDeleteAuditLog = async (id, logAuthor, logSku) => {
         if (currentRole === 'qc') {
-          alert('Akun QC tidak diizinkan menghapus record opname!');
+          alert('Akses Ditolak! Akun QC tidak diizinkan untuk menghapus data record opname.');
           return;
         }
+
         if (currentRole === 'auditor' && currentUser !== logAuthor) {
           alert('Anda hanya dapat menghapus data yang Anda input sendiri!');
           return;
         }
-        if (!confirm(`Hapus record SKU: ${logSku}?`)) return;
 
-        setAuditLogs(prev => prev.filter(log => log.id !== id));
-        await logActionHistory('HAPUS_SKU', logSku, `Menghapus record fisik milik ${logAuthor}`);
+        if (!confirm(`Apakah Anda yakin ingin menghapus record SKU: ${logSku}?`)) return;
+
+        setAuditLogs(auditLogs.filter(log => log.id !== id));
+        logActionHistory('HAPUS_SKU', logSku, `Menghapus record fisik yang dibuat oleh ${logAuthor}`);
 
         try {
           await supabase.from('audit_logs').delete().eq('id', id);
-          await fetchAuditLogs();
         } catch (err) {
-          console.error('Gagal hapus dari Supabase:', err);
+          console.error('Gagal menghapus dari cloud:', err);
         }
       };
 
       const handleAccLog = async (id, currentStatus, skuCode) => {
         if (currentRole !== 'koordinator') {
-          alert('Hanya Koordinator yang berhak memberikan ACC persetujuan.');
+          alert('Akses Ditolak! Hanya Koordinator yang berhak memberikan ACC persetujuan.');
           return;
         }
         const newStatus = currentStatus === 'APPROVED' ? 'PENDING' : 'APPROVED';
         const approver = currentUser;
         
-        setAuditLogs(prev => prev.map(log => log.id === id ? { ...log, accStatus: newStatus, accBy: approver } : log));
-        await logActionHistory(
+        setAuditLogs(auditLogs.map(log => log.id === id ? { ...log, accStatus: newStatus, accBy: approver } : log));
+        logActionHistory(
           newStatus === 'APPROVED' ? 'ACC_KOORDINATOR_APPROVED' : 'ACC_KOORDINATOR_CANCEL', 
           skuCode, 
-          newStatus === 'APPROVED' ? `ACC disetujui oleh ${approver}` : `ACC dibatalkan`
+          newStatus === 'APPROVED' ? `ACC disetujui oleh ${approver}` : `Persetujuan ACC dibatalkan oleh ${approver}`
         );
 
         try {
-          await supabase.from('audit_logs').update({ acc_status: newStatus, acc_by: approver }).eq('id', id);
-          await fetchAuditLogs();
+          await supabase.from('audit_logs').update({ 
+            acc_status: newStatus, 
+            acc_by: approver 
+          }).eq('id', id);
         } catch (err) {
-          console.error('Gagal update ACC di Supabase:', err);
+          console.error('Gagal memperbarui status ACC:', err);
         }
       };
 
       const handleQcUpdate = async (id, currentQc, skuCode) => {
-        if (currentRole !== 'qc' && currentRole !== 'koordinator') {
-          alert('Akses Ditolak! Auditor tidak memiliki izin untuk mengonfirmasi verifikasi Checker.');
+        if (currentRole === 'auditor') {
+          alert('Akses Ditolak! Auditor tidak berhak melakukan QC check.');
           return;
         }
-
         const qcPerson = currentUser;
         const newQc = currentQc === '-' ? qcPerson : '-';
 
-        setAuditLogs(prev => prev.map(log => log.id === id ? { ...log, qcName: newQc } : log));
-        await logActionHistory(
+        setAuditLogs(auditLogs.map(log => log.id === id ? { ...log, qcName: newQc } : log));
+        logActionHistory(
           newQc !== '-' ? 'ACC_QC_CHECKED' : 'ACC_QC_UNCHECKED', 
           skuCode, 
-          newQc !== '-' ? `Verified oleh QC ${qcPerson}` : `Verifikasi QC dibatalkan`
+          newQc !== '-' ? `Di-verifikasi (Checked) oleh QC ${qcPerson}` : `Verifikasi QC dibatalkan`
         );
 
         try {
           await supabase.from('audit_logs').update({ qc_name: newQc }).eq('id', id);
-          await fetchAuditLogs();
         } catch (err) {
-          console.error('Gagal update status QC di Supabase:', err);
+          console.error('Gagal memperbarui status QC:', err);
         }
       };
 
-      const handleUpdateQcInputQty = async (id, val, skuCode) => {
-        if (currentRole !== 'qc' && currentRole !== 'koordinator') {
-          alert('Akses Ditolak! Auditor tidak dapat mengisi atau merubah Qty Checker.');
+      // Handler Tambah Task To-Do Baru & Simpan ke Cloud Supabase
+      const handleCreateTask = async (e) => {
+        e.preventDefault();
+        if (currentRole !== 'koordinator') {
+          alert('Hanya Koordinator yang berhak memberikan task To-Do!');
+          return;
+        }
+        if (!taskTitle) {
+          alert('Nama task wajib diisi!');
           return;
         }
 
-        const parsedVal = val !== '' ? parseFloat(val) : null;
-        
-        setAuditLogs(prev => prev.map(log => {
-          if (log.id === id) {
-            let updatedPcs = log.pcsQty;
-            let updatedKoli = log.koliQty;
-            const ratio = log.conversionRatio || 50;
-
-            if (parsedVal !== null) {
-              if (log.unit === 'Koli') {
-                updatedPcs = parsedVal * ratio;
-                updatedKoli = parsedVal;
-              } else {
-                updatedPcs = parsedVal;
-                updatedKoli = parsedVal / ratio;
-              }
-            }
-            return { ...log, qcInputQty: parsedVal, pcsQty: updatedPcs, koliQty: updatedKoli };
-          }
-          return log;
-        }));
-
-        try {
-          await supabase.from('audit_logs').update({ 
-            qc_input_qty: parsedVal,
-            pcs_qty: val !== '' ? (auditLogs.find(l => l.id === id)?.unit === 'Koli' ? parseFloat(val) * (auditLogs.find(l => l.id === id)?.conversionRatio || 50) : parseFloat(val)) : auditLogs.find(l => l.id === id)?.pcsQty
-          }).eq('id', id);
-          await fetchAuditLogs();
-        } catch (err) {
-          console.error('Gagal update Qty Checker di Supabase:', err);
-        }
-      };
-
-      const handleCreateTask = async (e) => {
-        e.preventDefault();
-        if (currentRole !== 'koordinator') return;
-        if (!taskTitle) return;
-
         const newId = `t_${Date.now()}`;
         const newTask = {
-          id: newId, title: taskTitle, description: taskDesc || '-', priority: taskPriority, period: taskCategory, dueDate: taskDueDate || new Date().toISOString().split('T')[0], assignedTo: taskAssignedTo, completed: false
+          id: newId,
+          title: taskTitle,
+          description: taskDesc || '-',
+          priority: taskPriority,
+          period: taskCategory,
+          dueDate: taskDueDate || new Date().toISOString().split('T')[0],
+          assignedTo: taskAssignedTo,
+          completed: false
         };
 
-        setTodos(prev => [newTask, ...prev]);
+        setTodos([newTask, ...todos]);
+        setTodoPeriod(taskCategory); // Otomatis pindah tab kategori agar task langsung terlihat
         setTaskTitle('');
         setTaskDesc('');
+        setTaskDueDate('');
+        alert(`Task "${taskTitle}" berhasil diberikan kepada ${taskAssignedTo} dan tersimpan ke Cloud!`);
 
         try {
           await supabase.from('audit_todos').insert([{
-            id: newId, title: newTask.title, description: newTask.description, priority: newTask.priority, period: newTask.period, due_date: newTask.dueDate, assigned_to: newTask.assignedTo, completed: false
+            id: newId,
+            title: newTask.title,
+            description: newTask.description,
+            priority: newTask.priority,
+            period: newTask.period,
+            due_date: newTask.dueDate,
+            assigned_to: newTask.assignedTo,
+            completed: newTask.completed
           }]);
         } catch (err) {
-          console.error('Gagal simpan todo:', err);
+          console.error('Gagal menyimpan task ke database cloud:', err);
         }
       };
 
+      // Handler Ubah Status Checkbox To-Do & Sinkronisasi ke Cloud
       const handleToggleTask = async (taskId, currentCompleted) => {
         const nextStatus = !currentCompleted;
-        setTodos(prev => prev.map(t => t.id === taskId ? { ...t, completed: nextStatus } : t));
+        setTodos(todos.map(t => t.id === taskId ? { ...t, completed: nextStatus } : t));
 
         try {
           await supabase.from('audit_todos').update({ completed: nextStatus }).eq('id', taskId);
         } catch (err) {
-          console.error('Gagal update todo:', err);
+          console.error('Gagal memperbarui status task di cloud:', err);
         }
       };
 
+      // Handler Hapus Task To-Do & Hapus dari Cloud
       const handleDeleteTask = async (taskId) => {
-        if (currentRole !== 'koordinator') return;
+        if (currentRole !== 'koordinator') {
+          alert('Hanya Koordinator yang berhak menghapus task To-Do!');
+          return;
+        }
         if (confirm('Hapus task ini?')) {
-          setTodos(prev => prev.filter(t => t.id !== taskId));
+          setTodos(todos.filter(t => t.id !== taskId));
           try {
             await supabase.from('audit_todos').delete().eq('id', taskId);
           } catch (err) {
-            console.error('Gagal hapus todo:', err);
+            console.error('Gagal menghapus task dari cloud:', err);
           }
         }
       };
 
+      // Filter & Sort To-Do Tasks
       const sortedFilteredTodos = useMemo(() => {
         let filtered = todos.filter(t => t.period === todoPeriod);
+
+        // Sorting Priority Order: High -> Medium -> Low
         const priorityWeight = { 'High': 3, 'Medium': 2, 'Low': 1 };
+        
         return filtered.sort((a, b) => {
           const wA = priorityWeight[a.priority] || 0;
           const wB = priorityWeight[b.priority] || 0;
@@ -620,18 +571,10 @@
         });
       }, [todos, todoPeriod, todoPrioritySort]);
 
-      // DASHBOARD HANYA MENGHITUNG DATA YANG SUDAH MARK QC DAN APPROVED KOORDINATOR
       const reconciliationData = useMemo(() => {
         const physicalCounts = {};
-        
-        const verifiedLogs = auditLogs.filter(log => log.qcName !== '-' && log.accStatus === 'APPROVED');
-        
-        verifiedLogs.forEach(log => {
-          const effectivePcs = (log.qcInputQty !== null && log.qcInputQty !== undefined)
-            ? (log.unit === 'Koli' ? log.qcInputQty * (log.conversionRatio || 50) : log.qcInputQty)
-            : log.pcsQty;
-          
-          physicalCounts[log.sku] = (physicalCounts[log.sku] || 0) + effectivePcs;
+        auditLogs.forEach(log => {
+          physicalCounts[log.sku] = (physicalCounts[log.sku] || 0) + log.pcsQty;
         });
 
         let items = masterStock.map(stock => {
@@ -652,44 +595,75 @@
 
         if (sortConfig.key) {
           items.sort((a, b) => {
-            let aVal = a[sortConfig.key] || 0;
-            let bVal = b[sortConfig.key] || 0;
+            let aVal = a[sortConfig.key];
+            let bVal = b[sortConfig.key];
+
+            if (sortConfig.key === 'systemQty') {
+              aVal = a.systemQty || 0;
+              bVal = b.systemQty || 0;
+            } else if (sortConfig.key === 'physicalQty') {
+              aVal = a.physicalQty || 0;
+              bVal = b.physicalQty || 0;
+            } else if (sortConfig.key === 'discrepancyPcs') {
+              aVal = a.discrepancyPcs || 0;
+              bVal = b.discrepancyPcs || 0;
+            } else if (sortConfig.key === 'status') {
+              aVal = a.status || '';
+              bVal = b.status || '';
+            }
+
             if (typeof aVal === 'string') {
               return sortConfig.direction === 'asc' ? aVal.localeCompare(bVal) : bVal.localeCompare(aVal);
+            } else {
+              return sortConfig.direction === 'asc' ? aVal - bVal : bVal - aVal;
             }
-            return sortConfig.direction === 'asc' ? aVal - bVal : bVal - aVal;
           });
         }
 
         const totalAuditedPcs = Object.values(physicalCounts).reduce((a, b) => a + b, 0);
         const totalSystemPcs = masterStock.reduce((a, b) => a + (b.systemQty || 0), 0);
         const netDiscrepancy = totalAuditedPcs - totalSystemPcs;
-        const totalDiscrepanciesCount = masterStock.filter(s => ((physicalCounts[s.sku] || 0) - s.systemQty) !== 0).length;
+        
+        const allItemsForCount = masterStock.map(stock => {
+          const pQty = physicalCounts[stock.sku] || 0;
+          return pQty - stock.systemQty;
+        });
+        const totalDiscrepanciesCount = allItemsForCount.filter(diff => diff !== 0).length;
         const totalSkusCount = masterStock.length;
 
         return { items, totalAuditedPcs, totalSystemPcs, netDiscrepancy, totalDiscrepanciesCount, totalSkusCount };
       }, [masterStock, auditLogs, dashboardSearch, sortConfig]);
 
       const handleSort = (key) => {
-        setSortConfig(prev => ({ key, direction: prev.key === key && prev.direction === 'asc' ? 'desc' : 'asc' }));
+        let direction = 'asc';
+        if (sortConfig.key === key && sortConfig.direction === 'asc') {
+          direction = 'desc';
+        }
+        setSortConfig({ key, direction });
       };
 
       const downloadNativeExcel = (sheetName, headers, rows, filename) => {
         try {
-          if (!window.XLSX) return;
-          const worksheet = window.XLSX.utils.aoa_to_sheet([headers, ...rows]);
+          if (!window.XLSX) {
+            alert('Pustaka Excel sedang dimuat...');
+            return;
+          }
+          const aoaData = [headers, ...rows];
+          const worksheet = window.XLSX.utils.aoa_to_sheet(aoaData);
           const workbook = window.XLSX.utils.book_new();
           window.XLSX.utils.book_append_sheet(workbook, worksheet, sheetName);
           window.XLSX.writeFile(workbook, filename);
         } catch (err) {
-          alert('Gagal mengunduh Excel: ' + err.message);
+          alert('Gagal mengunduh file Excel: ' + err.message);
         }
       };
 
       const handleDownloadMasterTemplate = () => {
         const headers = ['No', 'Nama Produk', 'Variasi Warna', 'Variasi Ukuran', 'SKU Induk', 'SKU Variasi', 'Sales Rata2 / Bulan', 'Kategori Moving Barang', 'Harga Barang', 'Kategori Harga Barang'];
         const rows = [
-          [1, 'Sepatu Running Speed', 'Merah', '42', 'SKU-RUN-SPD', 'SKU-RUN-SPD-RED-42', 120, 'Fast Moving', 550000, 'Medium Value']
+          [1, 'Sepatu Running Speed', 'Merah', '42', 'SKU-RUN-SPD', 'SKU-RUN-SPD-RED-42', 120, 'Fast Moving', 550000, 'Medium Value'],
+          [2, 'Tas BackPack Travel', 'Hitam', '30L', 'SKU-BAG-TRV', 'SKU-BAG-TRV-BLK-30L', 15, 'Slow Moving', 1850000, 'High Value'],
+          [3, 'Lemari Jati Jepara', 'Cokelat', '1x2m', 'Lemari Jati', 'lemari-jati-coklat-2m', 275, 'Fast Moving', 2000000, 'High Value']
         ];
         downloadNativeExcel('Master Data', headers, rows, 'Template_Master_Data.xlsx');
       };
@@ -710,26 +684,27 @@
         downloadNativeExcel('Master Sync & Delete', headers, rows, 'Template_Master_Sync_Dan_Hapus.xlsx');
       };
 
-      const handleExportToExcel = (logsFilter) => {
-        const targetLogs = logsFilter || (currentRole === 'auditor' 
-          ? auditLogs.filter(log => log.auditorName.toLowerCase() === currentUser.toLowerCase()) 
-          : auditLogs);
-
-        if (targetLogs.length === 0) {
-          alert('Belum ada data opname fisik yang tersedia untuk diekspor!');
+      const handleExportToExcel = () => {
+        if (currentRole !== 'koordinator') {
+          alert('Hanya Koordinator yang dapat mengekspor laporan akhir!');
           return;
         }
-
-        const headers = ['No', 'Waktu Audit', 'Zona / Lokasi', 'Kode SKU Variasi', 'Nama Produk', 'Qty Auditor', 'Qty Checker', 'Satuan Input', 'Rasio Konversi', 'Physical Qty (Pcs)', 'Author (Auditor)', 'QC Check', 'Status ACC Koordinator', 'Catatan Auditor'];
-        const rows = targetLogs.map((log, index) => {
+        if (auditLogs.length === 0) {
+          alert('Belum ada data opname fisik untuk diexport!');
+          return;
+        }
+        const headers = ['No', 'Waktu Audit', 'Zona / Lokasi', 'Kode SKU Variasi', 'Nama Produk', 'Qty Input Physical', 'Satuan Input', 'Rasio Konversi', 'Physical Qty (Pcs)', 'Physical Qty (Koli)', 'System Qty (Pcs)', 'Selisih (Pcs)', 'Selisih (Koli)', 'Author (Auditor)', 'QC Check', 'Status ACC Koordinator', 'Catatan Auditor'];
+        const rows = auditLogs.map((log, index) => {
+          const systemQty = log.systemQty || 0;
+          const selisihPcs = log.pcsQty - systemQty;
+          const selisihKoli = parseFloat((selisihPcs / (log.conversionRatio || 50)).toFixed(2));
           return [
-            index + 1, log.timestamp, log.zone, log.sku, log.name, log.inputQty, log.qcInputQty !== null ? log.qcInputQty : '-', log.unit, log.conversionRatio, 
-            log.pcsQty, log.auditorName, log.qcName, log.accStatus, log.note || '-'
+            index + 1, log.timestamp, log.zone, log.sku, log.name, log.inputQty, log.unit, log.conversionRatio, 
+            log.pcsQty, parseFloat(log.koliQty.toFixed(2)), systemQty, selisihPcs, selisihKoli, 
+            log.auditorName, log.qcName, log.accStatus, log.note || '-'
           ];
         });
-
-        const fileNamePrefix = currentRole === 'auditor' ? `Laporan_Audit_${currentUser.replace(/\s+/g, '_')}` : 'Laporan_Stock_Opname_Total';
-        downloadNativeExcel('Hasil Opname', headers, rows, `${fileNamePrefix}_${new Date().toISOString().split('T')[0]}.xlsx`);
+        downloadNativeExcel('Hasil Opname', headers, rows, `Laporan_Stock_Opname_${new Date().toISOString().split('T')[0]}.xlsx`);
       };
 
       const cleanKey = (key) => key ? String(key).trim().toLowerCase().replace(/[^a-z0-9]/g, '') : '';
@@ -740,7 +715,10 @@
       };
 
       const handleFileUpload = (e) => {
-        if (currentRole !== 'koordinator') return;
+        if (currentRole !== 'koordinator') {
+          alert('Akses Ditolak! Hanya Koordinator yang berhak melakukan import data.');
+          return;
+        }
         const file = e.target.files[0];
         if (!file) return;
         setIsProcessingFile(true);
@@ -751,33 +729,35 @@
           try {
             const data = new Uint8Array(evt.target.result);
             const workbook = window.XLSX.read(data, { type: 'array', cellDates: true });
-            const json = window.XLSX.utils.sheet_to_json(workbook.Sheets[workbook.SheetNames[0]], { defval: '', raw: false });
+            const firstSheetName = workbook.SheetNames[0];
+            const json = window.XLSX.utils.sheet_to_json(workbook.Sheets[firstSheetName], { defval: '', raw: false });
             
             let updatedMaster = [...masterStock];
+            
             const modeNameLabel = importMode === 'master' ? '1. Import Data Master Baru' : importMode === 'qty' ? '2. Import Qty Stok Saja' : '3. Sync & Hapus SKU Master';
 
-            if (importMode === 'master' || importMode === 'sync_delete') {
+            if (importMode === 'master') {
               for (const row of json) {
-                const findVal = (names) => {
-                  const cleaned = names.map(cleanKey);
+                const findValue = (names) => {
+                  const cleanedNames = names.map(cleanKey);
                   for (const k of Object.keys(row)) {
-                    if (cleaned.includes(cleanKey(k))) return row[k];
+                    if (cleanedNames.includes(cleanKey(k))) return row[k];
                   }
                   return '';
                 };
-                const sku = String(findVal(['SKU Variasi', 'SKU'])).trim();
+                const sku = String(findValue(['SKU Variasi', 'SKU'])).trim();
                 if (!sku) continue;
-                const name = String(findVal(['Nama Produk', 'NamaBarang']) || 'Barang Baru').trim();
-                const color = String(findVal(['Variasi Warna', 'Warna']) || '-').trim();
-                const size = String(findVal(['Variasi Ukuran', 'Ukuran']) || '-').trim();
-                const skuInduk = String(findVal(['SKU Induk']) || '-').trim();
-                const sales = parseNumber(findVal(['Sales Rata2 / Bulan', 'Sales']));
-                const movingCategory = String(findVal(['Kategori Moving Barang']) || 'Medium Moving').trim();
-                const price = parseNumber(findVal(['Harga Barang', 'Harga']));
-                const priceCategory = String(findVal(['Kategori Harga Barang']) || 'Medium Value').trim();
+                const name = String(findValue(['Nama Produk', 'NamaBarang']) || 'Barang Baru').trim();
+                const color = String(findValue(['Variasi Warna', 'Warna']) || '-').trim();
+                const size = String(findValue(['Variasi Ukuran', 'Ukuran']) || '-').trim();
+                const skuInduk = String(findValue(['SKU Induk']) || '-').trim();
+                const sales = parseNumber(findValue(['Sales Rata2 / Bulan', 'Sales']));
+                const movingCategory = String(findValue(['Kategori Moving Barang', 'Kategori Moving']) || 'Medium Moving').trim();
+                const price = parseNumber(findValue(['Harga Barang', 'Harga']));
+                const priceCategory = String(findValue(['Kategori Harga Barang']) || 'Medium Value').trim();
 
-                const existingIndex = updatedMaster.findIndex(i => i.sku.toLowerCase() === sku.toLowerCase());
-                const newItem = { id: sku, name, color, size, skuInduk, sku, salesPerMonth: sales, movingCategory, price, priceCategory, zone: 'Zona A1', systemQty: existingIndex >= 0 ? updatedMaster[existingIndex].systemQty : 0, conversionRatio: 50 };
+                const existingIndex = updatedMaster.findIndex(item => item.sku.toLowerCase() === sku.toLowerCase());
+                const newItem = { id: existingIndex >= 0 ? updatedMaster[existingIndex].id : sku, name, color, size, skuInduk, sku, salesPerMonth: sales, movingCategory, price, priceCategory, zone: 'Zona A1', systemQty: existingIndex >= 0 ? updatedMaster[existingIndex].systemQty : 0, conversionRatio: 50 };
                 
                 if (existingIndex >= 0) updatedMaster[existingIndex] = { ...updatedMaster[existingIndex], ...newItem };
                 else updatedMaster.push(newItem);
@@ -785,27 +765,99 @@
                 await supabase.from('master_skus').upsert({
                   sku: sku, name: name, color: color, size: size, sku_induk: skuInduk, sku_variasi: sku,
                   sales_avg: sales, moving_category: movingCategory, price: price, price_category: priceCategory,
-                  system_qty: newItem.systemQty, conversion_ratio: 50
+                  system_qty: existingIndex >= 0 ? updatedMaster[existingIndex].systemQty : 0, conversion_ratio: 50
+                });
+              }
+            } else if (importMode === 'qty') {
+              for (const row of json) {
+                const findValue = (names) => {
+                  const cleanedNames = names.map(cleanKey);
+                  for (const k of Object.keys(row)) {
+                    if (cleanedNames.includes(cleanKey(k))) return row[k];
+                  }
+                  return '';
+                };
+                const sku = String(findValue(['SKU Variasi', 'SKU'])).trim();
+                if (!sku) continue;
+                const newQty = parseNumber(findValue(['Qty System', 'Qty']));
+                const ratio = parseNumber(findValue(['Isi Per Koli', 'Isi Per Karung', 'Rasio'])) || 50;
+                const existingIndex = updatedMaster.findIndex(item => item.sku.toLowerCase() === sku.toLowerCase());
+                
+                if (existingIndex >= 0) {
+                  updatedMaster[existingIndex].systemQty = newQty;
+                  updatedMaster[existingIndex].conversionRatio = ratio;
+                } else {
+                  updatedMaster.push({ id: sku, name: 'Item (' + sku + ')', color: '-', size: '-', skuInduk: '-', sku, salesPerMonth: 0, movingCategory: 'Medium Moving', price: 0, priceCategory: 'Medium Value', zone: 'Zona A1', systemQty: newQty, conversionRatio: ratio });
+                }
+
+                await supabase.from('master_skus').update({ system_qty: newQty, conversion_ratio: ratio }).eq('sku', sku);
+              }
+            } else if (importMode === 'sync_delete') {
+              const excelSkus = [];
+              const newMasterList = [];
+
+              for (const row of json) {
+                const findValue = (names) => {
+                  const cleanedNames = names.map(cleanKey);
+                  for (const k of Object.keys(row)) {
+                    if (cleanedNames.includes(cleanKey(k))) return row[k];
+                  }
+                  return '';
+                };
+                const sku = String(findValue(['SKU Variasi', 'SKU'])).trim();
+                if (!sku) continue;
+                excelSkus.push(sku.toLowerCase());
+
+                const name = String(findValue(['Nama Produk', 'NamaBarang']) || 'Barang Baru').trim();
+                const color = String(findValue(['Variasi Warna', 'Warna']) || '-').trim();
+                const size = String(findValue(['Variasi Ukuran', 'Ukuran']) || '-').trim();
+                const skuInduk = String(findValue(['SKU Induk']) || '-').trim();
+                const sales = parseNumber(findValue(['Sales Rata2 / Bulan', 'Sales']));
+                const movingCategory = String(findValue(['Kategori Moving Barang', 'Kategori Moving']) || 'Medium Moving').trim();
+                const price = parseNumber(findValue(['Harga Barang', 'Harga']));
+                const priceCategory = String(findValue(['Kategori Harga Barang']) || 'Medium Value').trim();
+                const systemQty = parseNumber(findValue(['Qty System', 'Qty'])) || 0;
+                const conversionRatio = parseNumber(findValue(['Isi Per Koli', 'Isi Per Karung', 'Rasio'])) || 50;
+
+                const newItem = { id: sku, name, color, size, skuInduk, sku, salesPerMonth: sales, movingCategory, price, priceCategory, zone: 'Zona A1', systemQty, conversionRatio };
+                newMasterList.push(newItem);
+
+                await supabase.from('master_skus').upsert({
+                  sku: sku, name: name, color: color, size: size, sku_induk: skuInduk, sku_variasi: sku,
+                  sales_avg: sales, moving_category: movingCategory, price: price, price_category: priceCategory,
+                  system_qty: systemQty, conversion_ratio: conversionRatio
                 }, { onConflict: 'sku' });
               }
+
+              const skusToDelete = masterStock.filter(item => !excelSkus.includes(item.sku.toLowerCase()));
+              for (const delItem of skusToDelete) {
+                await supabase.from('master_skus').delete().eq('sku', delItem.sku);
+              }
+
+              updatedMaster = newMasterList;
             }
 
             setMasterStock(updatedMaster);
+
+            const newImportLog = {
+              id: Date.now().toString(),
+              timestamp: new Date().toLocaleString('id-ID'),
+              fileName: file.name,
+              mode: modeNameLabel,
+              uploader: currentUser
+            };
+            setImportHistory(prev => [newImportLog, ...prev]);
+
             setUploadProgress(100);
-            setUploadStatusMsg('Selesai tersimpan ke Supabase Cloud!');
-            setTimeout(() => setIsProcessingFile(false), 1000);
+            setUploadStatusMsg('Sinkronisasi & Hapus SKU Selesai di Cloud!');
+            setTimeout(() => setIsProcessingFile(false), 1200);
           } catch (err) {
             setIsProcessingFile(false);
-            alert('Gagal upload.');
+            alert('Gagal memproses file.');
           }
         };
         reader.readAsArrayBuffer(file);
       };
-
-      const myAuditorLogs = useMemo(() => {
-        if (!currentUser) return [];
-        return auditLogs.filter(log => log.auditorName.toLowerCase() === currentUser.toLowerCase());
-      }, [auditLogs, currentUser]);
 
       if (!isLoggedIn) {
         return (
@@ -816,7 +868,7 @@
                   <svg className="w-8 h-8" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"/></svg>
                 </div>
                 <h1 className="text-xl font-bold text-white">AuditStock Pro Security</h1>
-                <p className="text-xs text-slate-400 mt-1">Silakan login untuk melanjutkan</p>
+                <p className="text-xs text-slate-400 mt-1">Silakan login terlebih dahulu untuk mengakses sistem</p>
               </div>
 
               {loginError && (
@@ -827,8 +879,12 @@
 
               <form onSubmit={handleLogin} className="space-y-4">
                 <div>
-                  <label className="block text-xs font-semibold uppercase text-slate-300 mb-1">Pilih Akun ({accounts.length} Akun Tersedia)</label>
-                  <select value={loginInputKey} onChange={(e) => setLoginInputKey(e.target.value)} className="w-full bg-slate-950 border border-slate-700 rounded-xl px-4 py-3 text-sm text-white">
+                  <label className="block text-xs font-semibold uppercase text-slate-300 mb-1">Pilih Akun / Peran ({accounts.length} Akun Tersedia)</label>
+                  <select 
+                    value={loginInputKey} 
+                    onChange={(e) => setLoginInputKey(e.target.value)} 
+                    className="w-full bg-slate-950 border border-slate-700 rounded-xl px-4 py-3 text-sm text-white focus:outline-none focus:border-blue-500"
+                  >
                     {accounts.map(acc => (
                       <option key={acc.key} value={acc.key}>{acc.name} ({acc.role.toUpperCase()})</option>
                     ))}
@@ -836,8 +892,15 @@
                 </div>
 
                 <div>
-                  <label className="block text-xs font-semibold uppercase text-slate-300 mb-1">Password</label>
-                  <input type="password" placeholder="Masukkan password..." value={loginPassword} onChange={(e) => setLoginPassword(e.target.value)} className="w-full bg-slate-950 border border-slate-700 rounded-xl px-4 py-3 text-sm text-white font-mono" autoFocus />
+                  <label className="block text-xs font-semibold uppercase text-slate-300 mb-1">Password Akses</label>
+                  <input 
+                    type="password" 
+                    placeholder="Masukkan password..." 
+                    value={loginPassword} 
+                    onChange={(e) => setLoginPassword(e.target.value)} 
+                    className="w-full bg-slate-950 border border-slate-700 rounded-xl px-4 py-3 text-sm text-white focus:outline-none focus:border-blue-500 font-mono"
+                    autoFocus
+                  />
                 </div>
 
                 <button type="submit" className="w-full bg-blue-600 hover:bg-blue-500 text-white font-semibold py-3 rounded-xl shadow-lg transition-all text-sm">
@@ -873,10 +936,8 @@
                     <button onClick={() => setActiveTab('todos')} className={`px-3 py-2 rounded-lg text-xs sm:text-sm font-medium ${activeTab === 'todos' ? 'bg-blue-600 text-white shadow-md' : 'text-slate-300 hover:bg-slate-800'}`}>To-Do</button>
                     <button onClick={() => setActiveTab('dashboard')} className={`px-3 py-2 rounded-lg text-xs sm:text-sm font-medium ${activeTab === 'dashboard' ? 'bg-blue-600 text-white shadow-md' : 'text-slate-300 hover:bg-slate-800'}`}>Dashboard</button>
                     
-                    {(currentRole === 'koordinator' || currentRole === 'auditor') && (
-                      <button onClick={() => setActiveTab('export')} className={`px-3 py-2 rounded-lg text-xs sm:text-sm font-medium ${activeTab === 'export' ? 'bg-blue-600 text-white shadow-md' : 'text-slate-300 hover:bg-slate-800'}`}>
-                        {currentRole === 'auditor' ? 'Ekspor Excel' : 'Import & Laporan'}
-                      </button>
+                    {currentRole === 'koordinator' && (
+                      <button onClick={() => setActiveTab('export')} className={`px-3 py-2 rounded-lg text-xs sm:text-sm font-medium ${activeTab === 'export' ? 'bg-blue-600 text-white shadow-md' : 'text-slate-300 hover:bg-slate-800'}`}>Import & Laporan</button>
                     )}
 
                     {currentRole === 'koordinator' && (
@@ -900,7 +961,7 @@
                     <h2 className="text-base font-semibold text-white mb-4">Form Audit Stock Opname</h2>
                     {currentRole === 'qc' ? (
                       <div className="bg-amber-950/40 border border-amber-500/30 p-4 rounded-xl text-xs text-amber-300 text-center">
-                        Akun QC / Checker bertugas melakukan verifikasi serta dapat menginput Qty Checker pada tabel sebelah kanan.
+                        Akun QC bertugas melakukan verifikasi (*Check*) pada tabel sebelah kanan. Input form fisik dikunci untuk peran QC.
                       </div>
                     ) : (
                       <form onSubmit={handleAddAuditLog} className="space-y-4">
@@ -929,34 +990,27 @@
                           )}
                         </div>
 
-                        <div className="grid grid-cols-2 gap-3">
-                          <div>
-                            <label className="block text-xs font-semibold uppercase text-slate-300 mb-1">3. Qty Auditor</label>
-                            <input type="number" step="any" placeholder="Qty" value={inputQty} onChange={(e) => setInputQty(e.target.value)} className="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2.5 text-sm font-mono font-bold text-white" />
-                          </div>
-                          <div>
-                            <label className="block text-xs font-semibold uppercase text-amber-400 mb-1">Qty Checker (Khusus QC)</label>
-                            <input type="number" step="any" placeholder="Checker Qty" disabled={currentRole === 'auditor'} value={qcInputQty} onChange={(e) => setQcInputQty(e.target.value)} className={`w-full bg-slate-900 border rounded-xl px-3 py-2.5 text-sm font-mono font-bold text-white ${currentRole === 'auditor' ? 'opacity-50 cursor-not-allowed border-slate-800' : 'border-amber-500/50'}`} />
-                          </div>
-                        </div>
-
                         <div>
-                          <label className="block text-xs font-semibold uppercase text-slate-300 mb-1">Satuan & Konversi Koli</label>
+                          <label className="block text-xs font-semibold uppercase text-slate-300 mb-1">3. Jumlah Fisik & Satuan</label>
                           <div className="grid grid-cols-12 gap-2">
+                            <div className="col-span-7">
+                              <input type="number" step="any" placeholder="Qty" value={inputQty} onChange={(e) => setInputQty(e.target.value)} className="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2.5 text-base font-mono font-bold text-white" />
+                            </div>
                             <div className="col-span-5">
                               <select value={unit} onChange={(e) => setUnit(e.target.value)} className="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2.5 text-sm font-semibold text-white">
                                 <option value="Pcs">Pcs</option>
                                 <option value="Koli">Koli</option>
                               </select>
                             </div>
-                            <div className="col-span-7 flex items-center justify-between text-xs text-slate-400 bg-slate-900/60 px-3 py-2 rounded-xl border border-slate-800">
-                              <span>1 Koli =</span>
-                              <input type="number" value={conversionRatio} onChange={(e) => setConversionRatio(Math.max(1, parseInt(e.target.value) || 1))} className="w-16 bg-slate-800 border border-slate-700 rounded text-center py-1 text-xs text-white font-mono" />
-                            </div>
+                          </div>
+                          <div className="mt-2 flex items-center justify-between text-xs text-slate-400 bg-slate-900/60 p-2 rounded-lg border border-slate-800">
+                            <span>1 Koli =</span>
+                            <input type="number" value={conversionRatio} onChange={(e) => setConversionRatio(Math.max(1, parseInt(e.target.value) || 1))} className="w-16 bg-slate-800 border border-slate-700 rounded text-center py-0.5 text-xs text-white font-mono" />
                           </div>
                           {inputQty > 0 && (
-                            <div className="mt-2 bg-emerald-950/30 border border-emerald-500/30 rounded-xl p-2.5 text-xs text-emerald-300">
-                              <span className="font-mono text-xs font-bold text-white">{convertedValues.displayText}</span>
+                            <div className="mt-3 bg-emerald-950/30 border border-emerald-500/30 rounded-xl p-3 text-xs text-emerald-300">
+                              <span className="font-semibold block">Konversi:</span>
+                              <span className="font-mono text-sm font-bold text-white">{convertedValues.displayText}</span>
                             </div>
                           )}
                         </div>
@@ -966,7 +1020,7 @@
                           <input type="text" placeholder="Catatan opsional" value={auditorNote} onChange={(e) => setAuditorNote(e.target.value)} className="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-sm text-white" />
                         </div>
 
-                        <button type="submit" className="w-full bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white font-semibold py-3 rounded-xl shadow-lg transition-all">Simpan Audit (Cloud Sync)</button>
+                        <button type="submit" className="w-full bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white font-semibold py-3 rounded-xl shadow-lg shadow-blue-600/30 transition-all">Simpan Audit (Cloud Sync)</button>
                       </form>
                     )}
                   </div>
@@ -984,76 +1038,55 @@
                             <tr>
                               <th className="p-3">Waktu & Zona</th>
                               <th className="p-3">SKU & Author</th>
-                              <th className="p-3 text-right">Qty Auditor</th>
-                              <th className="p-3 text-right">Qty Checker</th>
+                              <th className="p-3 text-right">Qty & Konversi</th>
                               <th className="p-3 text-center">QC Check</th>
                               <th className="p-3 text-center">ACC Koordinator</th>
                               <th className="p-3 text-center">Aksi</th>
                             </tr>
                           </thead>
                           <tbody className="divide-y divide-slate-800">
-                            {auditLogs.map(log => {
-                              const hasDiff = log.qcInputQty !== null && log.qcInputQty !== undefined && log.qcInputQty !== log.inputQty;
-                              const isQcDisabled = currentRole !== 'qc' && currentRole !== 'koordinator';
-
-                              return (
-                                <tr key={log.id} className="hover:bg-slate-700/30">
-                                  <td className="p-3"><span className="font-semibold text-slate-200">{log.zone}</span><span className="block text-[10px] text-slate-400">{log.timestamp}</span></td>
-                                  <td className="p-3">
-                                    <span className="font-mono text-blue-400 font-semibold block">{log.sku}</span>
-                                    <span className="text-slate-300 text-[11px]">{log.name}</span>
-                                    <span className="block text-[10px] text-indigo-400 mt-0.5">By: {log.auditorName}</span>
-                                  </td>
-                                  <td className="p-3 text-right font-mono">
-                                    <div className="text-white font-bold">{log.inputQty} {log.unit}</div>
-                                    <div className="text-emerald-400 text-[11px]">{log.pcsQty} Pcs</div>
-                                  </td>
-                                  <td className="p-3 text-right font-mono">
-                                    <div className="flex flex-col items-end">
-                                      <input 
-                                        type="number" 
-                                        step="any" 
-                                        disabled={isQcDisabled}
-                                        value={log.qcInputQty !== null && log.qcInputQty !== undefined ? log.qcInputQty : ''} 
-                                        onChange={(e) => handleUpdateQcInputQty(log.id, e.target.value, log.sku)}
-                                        placeholder={isQcDisabled ? "-" : "Input"} 
-                                        className={`w-20 bg-slate-900 border rounded p-1 text-xs font-mono font-bold text-right ${isQcDisabled ? 'opacity-50 border-slate-800 text-slate-500 cursor-not-allowed' : hasDiff ? 'border-rose-500 text-rose-300' : 'border-amber-500/50 text-amber-300'}`}
-                                      />
-                                      {hasDiff && (
-                                        <span className="text-[9px] text-rose-400 mt-0.5 font-semibold">⚠️ Selisih</span>
-                                      )}
-                                    </div>
-                                  </td>
-                                  <td className="p-3 text-center">
-                                    <button 
-                                      onClick={() => handleQcUpdate(log.id, log.qcName, log.sku)} 
-                                      disabled={isQcDisabled}
-                                      className={`px-2 py-1 rounded text-[10px] font-bold transition-all ${isQcDisabled ? 'opacity-40 cursor-not-allowed bg-slate-800 text-slate-500' : log.qcName !== '-' ? 'bg-indigo-500/20 text-indigo-300 border border-indigo-500/30' : 'bg-slate-800 text-slate-400 border border-slate-700 hover:bg-slate-700'}`}
-                                    >
-                                      {log.qcName !== '-' ? `Checked (${log.qcName})` : 'Mark QC'}
-                                    </button>
-                                  </td>
-                                  <td className="p-3 text-center">
-                                    <button 
-                                      onClick={() => handleAccLog(log.id, log.accStatus, log.sku)} 
-                                      disabled={currentRole !== 'koordinator'}
-                                      className={`px-2.5 py-1 rounded text-[10px] font-bold transition-all ${currentRole !== 'koordinator' ? 'opacity-60 cursor-not-allowed bg-slate-800 text-slate-500' : log.accStatus === 'APPROVED' ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30' : 'bg-amber-500/10 text-amber-400 border border-amber-500/30 hover:bg-amber-500/20'}`}
-                                    >
-                                      {log.accStatus === 'APPROVED' ? 'APPROVED ✓' : 'PENDING ACC'}
-                                    </button>
-                                  </td>
-                                  <td className="p-3 text-center">
-                                    <button 
-                                      onClick={() => handleDeleteAuditLog(log.id, log.auditorName, log.sku)} 
-                                      disabled={currentRole === 'qc'}
-                                      className={`p-1.5 rounded-lg text-[10px] transition-all ${currentRole === 'qc' ? 'opacity-30 cursor-not-allowed bg-slate-800 text-slate-500' : 'bg-rose-500/10 text-rose-400 hover:bg-rose-500/30'}`}
-                                    >
-                                      Hapus
-                                    </button>
-                                  </td>
-                                </tr>
-                              );
-                            })}
+                            {auditLogs.map(log => (
+                              <tr key={log.id} className="hover:bg-slate-700/30">
+                                <td className="p-3"><span className="font-semibold text-slate-200">{log.zone}</span><span className="block text-[10px] text-slate-400">{log.timestamp}</span></td>
+                                <td className="p-3">
+                                  <span className="font-mono text-blue-400 font-semibold block">{log.sku}</span>
+                                  <span className="text-slate-300 text-[11px]">{log.name}</span>
+                                  <span className="block text-[10px] text-indigo-400 mt-0.5">By: {log.auditorName}</span>
+                                </td>
+                                <td className="p-3 text-right font-mono">
+                                  <div className="text-white font-bold">{log.inputQty} {log.unit}</div>
+                                  <div className="text-emerald-400 text-[11px]">{log.pcsQty} Pcs</div>
+                                </td>
+                                <td className="p-3 text-center">
+                                  <button 
+                                    onClick={() => handleQcUpdate(log.id, log.qcName, log.sku)} 
+                                    disabled={currentRole === 'auditor'}
+                                    className={`px-2 py-1 rounded text-[10px] font-bold transition-all ${currentRole === 'auditor' ? 'opacity-50 cursor-not-allowed bg-slate-800 text-slate-500' : log.qcName !== '-' ? 'bg-indigo-500/20 text-indigo-300 border border-indigo-500/30' : 'bg-slate-800 text-slate-400 border border-slate-700 hover:bg-slate-700'}`}
+                                  >
+                                    {log.qcName !== '-' ? `Checked (${log.qcName})` : 'Mark QC'}
+                                  </button>
+                                </td>
+                                <td className="p-3 text-center">
+                                  <button 
+                                    onClick={() => handleAccLog(log.id, log.accStatus, log.sku)} 
+                                    disabled={currentRole !== 'koordinator'}
+                                    className={`px-2.5 py-1 rounded text-[10px] font-bold transition-all ${currentRole !== 'koordinator' ? 'opacity-50 cursor-not-allowed bg-slate-800 text-slate-500' : log.accStatus === 'APPROVED' ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30' : 'bg-amber-500/10 text-amber-400 border border-amber-500/30 hover:bg-amber-500/20'}`}
+                                  >
+                                    {log.accStatus === 'APPROVED' ? 'APPROVED ✓' : 'PENDING ACC'}
+                                  </button>
+                                </td>
+                                <td className="p-3 text-center">
+                                  <button 
+                                    onClick={() => handleDeleteAuditLog(log.id, log.auditorName, log.sku)} 
+                                    disabled={currentRole === 'qc'}
+                                    className={`p-1.5 rounded-lg text-[10px] transition-all ${currentRole === 'qc' ? 'opacity-30 cursor-not-allowed bg-slate-800 text-slate-500' : 'bg-rose-500/10 text-rose-400 hover:bg-rose-500/30'}`}
+                                    title={currentRole === 'qc' ? 'Akun QC tidak diizinkan menghapus data' : 'Hapus Record'}
+                                  >
+                                    Hapus
+                                  </button>
+                                </td>
+                              </tr>
+                            ))}
                           </tbody>
                         </table>
                       </div>
@@ -1065,7 +1098,7 @@
                   <div className="flex justify-between items-center">
                     <div>
                       <h3 className="text-base font-bold text-white">Histori Aksi & Timeline Audit</h3>
-                      <p className="text-xs text-slate-400">Log aktivitas penambahan SKU, penghapusan data, QC, dan ACC Koordinator</p>
+                      <p className="text-xs text-slate-400">Log aktivitas penambahan SKU, penghapusan data, ACC QC, dan ACC Koordinator</p>
                     </div>
                     <span className="bg-blue-600/20 text-blue-400 border border-blue-500/30 text-xs px-3 py-1 rounded-full font-mono font-bold">
                       {actionHistory.length} Log Aksi
@@ -1106,46 +1139,80 @@
               </div>
             )}
 
+            {/* Menu To-Do Versatile & Assignment (Terhubung Cloud) */}
             {activeTab === 'todos' && (
               <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+                {/* Form Pemberian Task (Hanya Tampil Jika Peran Koordinator) */}
                 {currentRole === 'koordinator' && (
                   <div className="lg:col-span-4 bg-slate-800/90 border border-slate-700/80 rounded-2xl p-5 shadow-xl space-y-4">
                     <h3 className="text-base font-bold text-white mb-2">Buat & Beri Task To-Do Baru</h3>
                     <form onSubmit={handleCreateTask} className="space-y-3">
                       <div>
                         <label className="block text-xs font-semibold uppercase text-slate-300 mb-1">1. Nama Task</label>
-                        <input type="text" placeholder="misal: Cek Barcode Rak A1" value={taskTitle} onChange={(e) => setTaskTitle(e.target.value)} className="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white" />
+                        <input 
+                          type="text" 
+                          placeholder="misal: Cek Barcode Rak A1" 
+                          value={taskTitle} 
+                          onChange={(e) => setTaskTitle(e.target.value)} 
+                          className="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white"
+                        />
                       </div>
+
                       <div>
                         <label className="block text-xs font-semibold uppercase text-slate-300 mb-1">2. Deskripsi Task</label>
-                        <textarea placeholder="Instruksi rinci..." value={taskDesc} onChange={(e) => setTaskDesc(e.target.value)} rows="2" className="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white"></textarea>
+                        <textarea 
+                          placeholder="Instruksi rinci untuk tim..." 
+                          value={taskDesc} 
+                          onChange={(e) => setTaskDesc(e.target.value)} 
+                          rows="2"
+                          className="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white"
+                        ></textarea>
                       </div>
+
                       <div className="grid grid-cols-2 gap-2">
                         <div>
-                          <label className="block text-xs font-semibold uppercase text-slate-300 mb-1">Priority</label>
-                          <select value={taskPriority} onChange={(e) => setTaskPriority(e.target.value)} className="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white">
+                          <label className="block text-xs font-semibold uppercase text-slate-300 mb-1">3. Priority Type</label>
+                          <select 
+                            value={taskPriority} 
+                            onChange={(e) => setTaskPriority(e.target.value)} 
+                            className="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white"
+                          >
                             <option value="High">🔴 High</option>
                             <option value="Medium">🟡 Medium</option>
                             <option value="Low">🟢 Low</option>
                           </select>
                         </div>
                         <div>
-                          <label className="block text-xs font-semibold uppercase text-slate-300 mb-1">Target Selesai</label>
-                          <input type="date" value={taskDueDate} onChange={(e) => setTaskDueDate(e.target.value)} className="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white" />
+                          <label className="block text-xs font-semibold uppercase text-slate-300 mb-1">4. Target Selesai</label>
+                          <input 
+                            type="date" 
+                            value={taskDueDate} 
+                            onChange={(e) => setTaskDueDate(e.target.value)} 
+                            className="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white"
+                          />
                         </div>
                       </div>
+
                       <div className="grid grid-cols-2 gap-2">
                         <div>
-                          <label className="block text-xs font-semibold uppercase text-slate-300 mb-1">Kategori</label>
-                          <select value={taskCategory} onChange={(e) => setTaskCategory(e.target.value)} className="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white">
+                          <label className="block text-xs font-semibold uppercase text-slate-300 mb-1">5. Kategori Task</label>
+                          <select 
+                            value={taskCategory} 
+                            onChange={(e) => setTaskCategory(e.target.value)} 
+                            className="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white"
+                          >
                             <option value="Harian">Harian</option>
                             <option value="Mingguan">Mingguan</option>
                             <option value="Bulanan">Bulanan</option>
                           </select>
                         </div>
                         <div>
-                          <label className="block text-xs font-semibold uppercase text-slate-300 mb-1">Tugaskan Ke</label>
-                          <select value={taskAssignedTo} onChange={(e) => setTaskAssignedTo(e.target.value)} className="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white">
+                          <label className="block text-xs font-semibold uppercase text-slate-300 mb-1">Tugaskan Kepada</label>
+                          <select 
+                            value={taskAssignedTo} 
+                            onChange={(e) => setTaskAssignedTo(e.target.value)} 
+                            className="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white"
+                          >
                             <option value="Semua Tim">Semua Tim</option>
                             {accounts.map(acc => (
                               <option key={acc.key} value={acc.name}>{acc.name} ({acc.role.toUpperCase()})</option>
@@ -1153,31 +1220,44 @@
                           </select>
                         </div>
                       </div>
-                      <button type="submit" className="w-full bg-blue-600 hover:bg-blue-500 text-white font-semibold py-2.5 rounded-xl shadow-lg transition-all text-xs mt-2">+ Berikan Task ke Tim</button>
+
+                      <button type="submit" className="w-full bg-blue-600 hover:bg-blue-500 text-white font-semibold py-2.5 rounded-xl shadow-lg transition-all text-xs mt-2">
+                        + Berikan Task ke Tim
+                      </button>
                     </form>
                   </div>
                 )}
 
+                {/* List Task & Filtering */}
                 <div className={`${currentRole === 'koordinator' ? 'lg:col-span-8' : 'lg:col-span-12'} space-y-4`}>
                   <div className="bg-slate-800/90 border border-slate-700/80 rounded-2xl p-4 shadow-xl flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3">
                     <div>
                       <h2 className="text-base font-bold text-white">Audit Task & Planning Schedule</h2>
-                      <p className="text-xs text-slate-400">Tim dapat melihat daftar tugas dan mencentang task yang selesai</p>
+                      <p className="text-xs text-slate-400">Tim dapat melihat daftar tugas dan mencentang task yang telah selesai</p>
                     </div>
+
                     <div className="flex flex-wrap items-center gap-2">
+                      {/* Filter Kategori Period */}
                       <div className="flex bg-slate-900 p-1 rounded-xl border border-slate-700">
                         {['Harian', 'Mingguan', 'Bulanan'].map(p => (
                           <button key={p} onClick={() => setTodoPeriod(p)} className={`px-2.5 py-1 rounded-lg text-xs font-semibold transition-all ${todoPeriod === p ? 'bg-blue-600 text-white shadow-md' : 'text-slate-400 hover:text-white'}`}>{p}</button>
                         ))}
                       </div>
-                      <button onClick={() => setTodoPrioritySort(prev => prev === 'DESC' ? 'ASC' : 'DESC')} className="bg-slate-900 hover:bg-slate-700 text-xs font-semibold px-3 py-1.5 rounded-xl border border-slate-700 text-indigo-300">
-                        Urut Priority: {todoPrioritySort === 'DESC' ? 'High → Low' : 'Low → High'}
+
+                      {/* Button Sort Priority */}
+                      <button 
+                        onClick={() => setTodoPrioritySort(prev => prev === 'DESC' ? 'ASC' : 'DESC')}
+                        className="bg-slate-900 hover:bg-slate-700 text-xs font-semibold px-3 py-1.5 rounded-xl border border-slate-700 text-indigo-300 flex items-center space-x-1"
+                      >
+                        <span>Urut Priority: {todoPrioritySort === 'DESC' ? 'High → Low' : 'Low → High'}</span>
                       </button>
                     </div>
                   </div>
 
                   {sortedFilteredTodos.length === 0 ? (
-                    <div className="bg-slate-800/90 border border-slate-700/80 rounded-2xl p-8 text-center text-xs text-slate-400">Tidak ada task {todoPeriod.toLowerCase()} yang tersedia</div>
+                    <div className="bg-slate-800/90 border border-slate-700/80 rounded-2xl p-8 text-center text-xs text-slate-400">
+                      Tidak ada task {todoPeriod.toLowerCase()} yang tersedia
+                    </div>
                   ) : (
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                       {sortedFilteredTodos.map(task => (
@@ -1185,20 +1265,37 @@
                           <div>
                             <div className="flex items-start justify-between gap-2">
                               <div className="flex items-start space-x-2">
-                                <input type="checkbox" checked={task.completed} onChange={() => handleToggleTask(task.id, task.completed)} className="w-4 h-4 accent-blue-600 mt-1 cursor-pointer" />
+                                <input 
+                                  type="checkbox" 
+                                  checked={task.completed} 
+                                  onChange={() => handleToggleTask(task.id, task.completed)} 
+                                  className="w-4 h-4 accent-blue-600 mt-1 cursor-pointer" 
+                                />
                                 <h4 className={`text-sm font-semibold leading-tight ${task.completed ? 'line-through text-slate-500' : 'text-white'}`}>{task.title}</h4>
                               </div>
-                              <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${task.priority === 'High' ? 'bg-rose-500/20 text-rose-300' : task.priority === 'Medium' ? 'bg-amber-500/20 text-amber-300' : 'bg-emerald-500/20 text-emerald-300'}`}>{task.priority}</span>
+                              <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${
+                                task.priority === 'High' ? 'bg-rose-500/20 text-rose-300 border border-rose-500/30' :
+                                task.priority === 'Medium' ? 'bg-amber-500/20 text-amber-300 border border-amber-500/30' :
+                                'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
+                              }`}>
+                                {task.priority}
+                              </span>
                             </div>
                             <p className="text-xs text-slate-400 mt-2 pl-6 leading-relaxed">{task.description}</p>
                           </div>
+
                           <div className="pt-2 border-t border-slate-700/60 flex justify-between items-center text-[11px] text-slate-400">
                             <div>
                               <span>Target: <strong className="text-slate-200">{task.dueDate}</strong></span>
                               <span className="block text-indigo-300">Untuk: {task.assignedTo || 'Semua Tim'}</span>
                             </div>
                             {currentRole === 'koordinator' && (
-                              <button onClick={() => handleDeleteTask(task.id)} className="text-rose-400 hover:text-rose-300 font-semibold">Hapus</button>
+                              <button 
+                                onClick={() => handleDeleteTask(task.id)}
+                                className="text-rose-400 hover:text-rose-300 font-semibold"
+                              >
+                                Hapus
+                              </button>
                             )}
                           </div>
                         </div>
@@ -1211,13 +1308,6 @@
 
             {activeTab === 'dashboard' && (
               <div className="space-y-6">
-                <div className="bg-amber-500/10 border border-amber-500/30 p-3.5 rounded-2xl flex items-center justify-between text-xs text-amber-300">
-                  <div className="flex items-center space-x-2">
-                    <span className="text-base">ℹ️</span>
-                    <span><strong>Catatan Validasi Data:</strong> Angka Stok Fisik & Selisih di bawah ini HANYA menghitung item yang telah di-verifikasi oleh <strong>Checker (Mark QC)</strong> DAN disetujui oleh <strong>Koordinator (APPROVED)</strong>.</span>
-                  </div>
-                </div>
-
                 <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4">
                   <div className="bg-slate-800/90 border border-slate-700/80 p-4 rounded-2xl shadow-lg">
                     <div className="text-slate-400 text-xs mb-1">Total SKU</div>
@@ -1228,7 +1318,7 @@
                     <div className="text-2xl font-mono font-bold text-white">{reconciliationData.totalSystemPcs.toLocaleString()} Pcs</div>
                   </div>
                   <div className="bg-slate-800/90 border border-slate-700/80 p-4 rounded-2xl shadow-lg">
-                    <div className="text-slate-400 text-xs mb-1">Total Fisik (Ter-ACC & QC)</div>
+                    <div className="text-slate-400 text-xs mb-1">Total Fisik (Audited)</div>
                     <div className="text-2xl font-mono font-bold text-emerald-400">{reconciliationData.totalAuditedPcs.toLocaleString()} Pcs</div>
                   </div>
                   <div className="bg-slate-800/90 border border-slate-700/80 p-4 rounded-2xl shadow-lg">
@@ -1245,9 +1335,15 @@
 
                 <div className="bg-slate-800/90 border border-slate-700/80 rounded-2xl p-5 shadow-xl space-y-4">
                   <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3">
-                    <h3 className="text-sm font-semibold text-white">Tabel Perbandingan Stok System vs Stok Fisik (Validated)</h3>
+                    <h3 className="text-sm font-semibold text-white">Tabel Perbandingan Stok System vs Stok Fisik</h3>
                     <div className="w-full sm:w-72">
-                      <input type="text" placeholder="Cari SKU Variasi / Nama..." value={dashboardSearch} onChange={(e) => setDashboardSearch(e.target.value)} className="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white" />
+                      <input 
+                        type="text" 
+                        placeholder="Cari SKU Variasi / Nama..." 
+                        value={dashboardSearch} 
+                        onChange={(e) => setDashboardSearch(e.target.value)} 
+                        className="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-blue-500"
+                      />
                     </div>
                   </div>
 
@@ -1257,10 +1353,18 @@
                         <tr>
                           <th className="p-3">SKU Variasi</th>
                           <th className="p-3">Nama & Detail Produk</th>
-                          <th className="p-3 text-right cursor-pointer" onClick={() => handleSort('systemQty')}>System Qty</th>
-                          <th className="p-3 text-right cursor-pointer" onClick={() => handleSort('physicalQty')}>Fisik (Pcs)</th>
-                          <th className="p-3 text-right cursor-pointer" onClick={() => handleSort('discrepancyPcs')}>Selisih Pcs</th>
-                          <th className="p-3 text-center cursor-pointer" onClick={() => handleSort('status')}>Status</th>
+                          <th className="p-3 text-right cursor-pointer hover:text-white" onClick={() => handleSort('systemQty')}>
+                            System Qty {sortConfig.key === 'systemQty' ? (sortConfig.direction === 'asc' ? '▲' : '▼') : '↕'}
+                          </th>
+                          <th className="p-3 text-right cursor-pointer hover:text-white" onClick={() => handleSort('physicalQty')}>
+                            Fisik (Pcs) {sortConfig.key === 'physicalQty' ? (sortConfig.direction === 'asc' ? '▲' : '▼') : '↕'}
+                          </th>
+                          <th className="p-3 text-right cursor-pointer hover:text-white" onClick={() => handleSort('discrepancyPcs')}>
+                            Selisih Pcs {sortConfig.key === 'discrepancyPcs' ? (sortConfig.direction === 'asc' ? '▲' : '▼') : '↕'}
+                          </th>
+                          <th className="p-3 text-center cursor-pointer hover:text-white" onClick={() => handleSort('status')}>
+                            Status {sortConfig.key === 'status' ? (sortConfig.direction === 'asc' ? '▲' : '▼') : '↕'}
+                          </th>
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-slate-800">
@@ -1281,205 +1385,123 @@
               </div>
             )}
 
-            {/* HALAMAN EKSPOR DENGAN FITUR HISTORI PADA AUDITOR */}
-            {activeTab === 'export' && (
+            {activeTab === 'export' && currentRole === 'koordinator' && (
               <div className="max-w-4xl mx-auto space-y-6">
-                {currentRole === 'koordinator' ? (
+                <div className="flex bg-slate-800/90 border border-slate-700/80 p-1.5 rounded-2xl shadow-xl">
+                  <button onClick={() => setExportSubTab('upload')} className={`flex-1 py-2.5 text-xs font-semibold rounded-xl transition-all ${exportSubTab === 'upload' ? 'bg-blue-600 text-white shadow-md' : 'text-slate-400 hover:text-white'}`}>Upload & Template Excel</button>
+                  <button onClick={() => setExportSubTab('history')} className={`flex-1 py-2.5 text-xs font-semibold rounded-xl transition-all ${exportSubTab === 'history' ? 'bg-blue-600 text-white shadow-md' : 'text-slate-400 hover:text-white'}`}>Histori Import File ({importHistory.length})</button>
+                </div>
+
+                {exportSubTab === 'upload' ? (
                   <>
-                    <div className="flex bg-slate-800/90 border border-slate-700/80 p-1.5 rounded-2xl shadow-xl">
-                      <button onClick={() => setExportSubTab('upload')} className={`flex-1 py-2.5 text-xs font-semibold rounded-xl transition-all ${exportSubTab === 'upload' ? 'bg-blue-600 text-white shadow-md' : 'text-slate-400 hover:text-white'}`}>Upload & Template Excel</button>
-                      <button onClick={() => setExportSubTab('history')} className={`flex-1 py-2.5 text-xs font-semibold rounded-xl transition-all ${exportSubTab === 'history' ? 'bg-blue-600 text-white shadow-md' : 'text-slate-400 hover:text-white'}`}>Histori Import File ({importHistory.length})</button>
+                    <div className="bg-slate-800/90 border border-slate-700/80 rounded-2xl p-6 shadow-xl">
+                      <div className="flex items-center justify-between mb-4">
+                        <div>
+                          <h2 className="text-base font-bold text-white">Download Template Excel Native (.xls / .xlsx)</h2>
+                          <p className="text-xs text-slate-400">Unduh file template berformat rapi (Header Biru, Border Tegas & Zebra Striping)</p>
+                        </div>
+                        <span className="bg-emerald-500/10 text-emerald-400 border border-emerald-500/30 text-xs px-3 py-1 rounded-full font-mono font-bold">
+                          {masterStock.length} SKU Master Tersedia
+                        </span>
+                      </div>
+
+                      <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mt-4">
+                        <div className="bg-slate-900/80 border border-indigo-500/30 rounded-xl p-4 flex flex-col justify-between">
+                          <div>
+                            <span className="text-indigo-300 text-xs font-bold block mb-2">Template 1: Data Master (3 Baris Contoh)</span>
+                            <p className="text-[11px] text-slate-400 mb-3 leading-relaxed">Berisi contoh format minimum untuk import data master baru agar form tetap bersih.</p>
+                          </div>
+                          <button onClick={handleDownloadMasterTemplate} className="w-full bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold py-2.5 rounded-lg shadow-md transition-all">Download Template Master</button>
+                        </div>
+
+                        <div className="bg-slate-900/80 border border-blue-500/30 rounded-xl p-4 flex flex-col justify-between">
+                          <div>
+                            <span className="text-blue-300 text-xs font-bold block mb-2">Template 2: Qty Stok ({masterStock.length} SKU)</span>
+                            <p className="text-[11px] text-slate-400 mb-3 leading-relaxed">Memuat seluruh SKU untuk memperbarui Qty System & Rasio Koli.</p>
+                          </div>
+                          <button onClick={handleDownloadQtyTemplate} className="w-full bg-blue-600 hover:bg-blue-500 text-white text-xs font-semibold py-2.5 rounded-lg shadow-md transition-all">Download Template Qty</button>
+                        </div>
+
+                        <div className="bg-slate-900/80 border border-emerald-500/30 rounded-xl p-4 flex flex-col justify-between">
+                          <div>
+                            <span className="text-emerald-300 text-xs font-bold block mb-2">Template 3: Master Sync & Hapus SKU</span>
+                            <p className="text-[11px] text-slate-400 mb-3 leading-relaxed">Memuat seluruh SKU untuk edit data master atau menghapus baris SKU yang salah.</p>
+                          </div>
+                          <button onClick={handleDownloadMasterSyncTemplate} className="w-full bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold py-2.5 rounded-lg shadow-md transition-all">Download Template Sync/Hapus</button>
+                        </div>
+                      </div>
                     </div>
 
-                    {exportSubTab === 'upload' ? (
-                      <>
-                        <div className="bg-slate-800/90 border border-slate-700/80 rounded-2xl p-6 shadow-xl">
-                          <div className="flex items-center justify-between mb-4">
-                            <div>
-                              <h2 className="text-base font-bold text-white">Download Template Excel Native (.xlsx)</h2>
-                              <p className="text-xs text-slate-400">Unduh file template berformat rapi</p>
-                            </div>
-                            <span className="bg-emerald-500/10 text-emerald-400 border border-emerald-500/30 text-xs px-3 py-1 rounded-full font-mono font-bold">
-                              {masterStock.length} SKU Master Tersedia
-                            </span>
-                          </div>
+                    <div className="bg-slate-800/90 border border-slate-700/80 rounded-2xl p-6 shadow-xl relative">
+                      <h2 className="text-base font-bold text-white mb-2">Import File Excel</h2>
+                      <p className="text-xs text-slate-400 mb-4">Pilih opsi import sesuai template yang Anda gunakan</p>
 
-                          <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mt-4">
-                            <div className="bg-slate-900/80 border border-indigo-500/30 rounded-xl p-4 flex flex-col justify-between">
-                              <div>
-                                <span className="text-indigo-300 text-xs font-bold block mb-2">Template 1: Data Master Baru</span>
-                              </div>
-                              <button onClick={handleDownloadMasterTemplate} className="w-full bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold py-2.5 rounded-lg shadow-md transition-all">Download Template Master</button>
-                            </div>
-
-                            <div className="bg-slate-900/80 border border-blue-500/30 rounded-xl p-4 flex flex-col justify-between">
-                              <div>
-                                <span className="text-blue-300 text-xs font-bold block mb-2">Template 2: Qty Stok</span>
-                              </div>
-                              <button onClick={handleDownloadQtyTemplate} className="w-full bg-blue-600 hover:bg-blue-500 text-white text-xs font-semibold py-2.5 rounded-lg shadow-md transition-all">Download Template Qty</button>
-                            </div>
-
-                            <div className="bg-slate-900/80 border border-emerald-500/30 rounded-xl p-4 flex flex-col justify-between">
-                              <div>
-                                <span className="text-emerald-300 text-xs font-bold block mb-2">Template 3: Master Sync & Hapus</span>
-                              </div>
-                              <button onClick={handleDownloadMasterSyncTemplate} className="w-full bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold py-2.5 rounded-lg shadow-md transition-all">Download Template Sync/Hapus</button>
-                            </div>
-                          </div>
-                        </div>
-
-                        <div className="bg-slate-800/90 border border-slate-700/80 rounded-2xl p-6 shadow-xl relative">
-                          <h2 className="text-base font-bold text-white mb-2">Import File Excel</h2>
-                          <div className="grid grid-cols-1 md:grid-cols-3 gap-2 bg-slate-900 p-1.5 rounded-xl border border-slate-700 mb-4">
-                            <button onClick={() => setImportMode('master')} className={`py-2 px-2 text-[11px] font-semibold rounded-lg transition-all ${importMode === 'master' ? 'bg-blue-600 text-white shadow-md' : 'text-slate-400 hover:text-white'}`}>1. Import Data Master Baru</button>
-                            <button onClick={() => setImportMode('qty')} className={`py-2 px-2 text-[11px] font-semibold rounded-lg transition-all ${importMode === 'qty' ? 'bg-blue-600 text-white shadow-md' : 'text-slate-400 hover:text-white'}`}>2. Import Qty Stok Saja</button>
-                            <button onClick={() => setImportMode('sync_delete')} className={`py-2 px-2 text-[11px] font-semibold rounded-lg transition-all ${importMode === 'sync_delete' ? 'bg-emerald-600 text-white shadow-md' : 'text-slate-400 hover:text-white'}`}>3. Sync & Hapus SKU Master</button>
-                          </div>
-
-                          <div className="border-2 border-dashed border-slate-700 rounded-xl p-6 text-center hover:border-blue-500 transition-colors">
-                            <input type="file" accept=".xlsx, .xls, .csv" onChange={handleFileUpload} className="hidden" id="excel-upload-input" />
-                            <label htmlFor="excel-upload-input" className="cursor-pointer flex flex-col items-center">
-                              <span className="text-sm font-semibold text-blue-400">Upload Excel</span>
-                              <span className="text-xs text-slate-500 mt-1">Format .xlsx, .xls, atau .csv didukung</span>
-                            </label>
-                          </div>
-
-                          {isProcessingFile && (
-                            <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-sm flex items-center justify-center p-4">
-                              <div className="bg-slate-900 border border-slate-700 rounded-2xl max-w-md w-full p-6 shadow-2xl text-center space-y-3">
-                                <h3 className="text-base font-bold text-white">Proses Upload Excel ke Cloud</h3>
-                                <p className="text-xs text-slate-400">{uploadStatusMsg}</p>
-                                <div className="w-full bg-slate-800 rounded-full h-3 overflow-hidden p-0.5 border border-slate-700">
-                                  <div className="bg-blue-600 h-full rounded-full transition-all duration-300" style={{ width: `${uploadProgress}%` }}></div>
-                                </div>
-                              </div>
-                            </div>
-                          )}
-                        </div>
-
-                        <div className="bg-slate-800/90 border border-slate-700/80 rounded-2xl p-6 shadow-xl">
-                          <h2 className="text-base font-bold text-white mb-1">Export Total Laporan Opname ke Excel</h2>
-                          <p className="text-xs text-slate-400 mb-3">Unduh seluruh record hasil audit fisik semua tim.</p>
-                          <button onClick={() => handleExportToExcel()} className="w-full bg-emerald-600 hover:bg-emerald-500 text-white font-semibold py-3 rounded-xl shadow-lg transition-all">Download Laporan Total (.xlsx)</button>
-                        </div>
-                      </>
-                    ) : (
-                      <div className="bg-slate-800/90 border border-slate-700/80 rounded-2xl p-6 shadow-xl space-y-4">
-                        <h2 className="text-base font-bold text-white">Histori File Excel yang Di-import</h2>
-                        {importHistory.length === 0 ? (
-                          <div className="text-center py-8 text-xs text-slate-500 border border-dashed border-slate-700 rounded-xl">Belum ada file Excel yang di-import pada sesi ini</div>
-                        ) : (
-                          <div className="overflow-x-auto">
-                            <table className="w-full text-left text-xs">
-                              <thead className="bg-slate-900 text-slate-400 font-mono uppercase border-b border-slate-700">
-                                <tr>
-                                  <th className="p-3">Waktu Import</th>
-                                  <th className="p-3">Nama File Excel</th>
-                                  <th className="p-3">Mode / Menu Import</th>
-                                  <th className="p-3">Uploader</th>
-                                </tr>
-                              </thead>
-                              <tbody className="divide-y divide-slate-800">
-                                {importHistory.map(imp => (
-                                  <tr key={imp.id} className="hover:bg-slate-700/30">
-                                    <td className="p-3 font-mono text-slate-300">{imp.timestamp}</td>
-                                    <td className="p-3 font-semibold text-blue-400">{imp.fileName}</td>
-                                    <td className="p-3"><span className="px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-500/20 text-emerald-300">{imp.mode}</span></td>
-                                    <td className="p-3 text-slate-300">{imp.uploader}</td>
-                                  </tr>
-                                ))}
-                              </tbody>
-                            </table>
-                          </div>
-                        )}
+                      <div className="grid grid-cols-1 md:grid-cols-3 gap-2 bg-slate-900 p-1.5 rounded-xl border border-slate-700 mb-4">
+                        <button onClick={() => setImportMode('master')} className={`py-2 px-2 text-[11px] font-semibold rounded-lg transition-all ${importMode === 'master' ? 'bg-blue-600 text-white shadow-md' : 'text-slate-400 hover:text-white'}`}>1. Import Data Master Baru</button>
+                        <button onClick={() => setImportMode('qty')} className={`py-2 px-2 text-[11px] font-semibold rounded-lg transition-all ${importMode === 'qty' ? 'bg-blue-600 text-white shadow-md' : 'text-slate-400 hover:text-white'}`}>2. Import Qty Stok Saja</button>
+                        <button onClick={() => setImportMode('sync_delete')} className={`py-2 px-2 text-[11px] font-semibold rounded-lg transition-all ${importMode === 'sync_delete' ? 'bg-emerald-600 text-white shadow-md' : 'text-slate-400 hover:text-white'}`}>3. Sync & Hapus SKU Master</button>
                       </div>
-                    )}
+
+                      <div className="border-2 border-dashed border-slate-700 rounded-xl p-6 text-center hover:border-blue-500 transition-colors">
+                        <input type="file" accept=".xlsx, .xls, .csv" onChange={handleFileUpload} className="hidden" id="excel-upload-input" />
+                        <label htmlFor="excel-upload-input" className="cursor-pointer flex flex-col items-center">
+                          <span className="text-sm font-semibold text-blue-400">
+                            Upload Excel: {importMode === 'master' ? 'Data Master Baru' : importMode === 'qty' ? 'Qty Stok Saja' : 'Sync & Hapus SKU Master'}
+                          </span>
+                          <span className="text-xs text-slate-500 mt-1">Format .xlsx, .xls, atau .csv didukung</span>
+                        </label>
+                      </div>
+
+                      {isProcessingFile && (
+                        <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-sm flex items-center justify-center p-4">
+                          <div className="bg-slate-900 border border-slate-700 rounded-2xl max-w-md w-full p-6 shadow-2xl text-center space-y-3">
+                            <h3 className="text-base font-bold text-white">Proses Upload Excel ke Cloud</h3>
+                            <p className="text-xs text-slate-400">{uploadStatusMsg}</p>
+                            <div className="w-full bg-slate-800 rounded-full h-3 overflow-hidden p-0.5 border border-slate-700">
+                              <div className="bg-blue-600 h-full rounded-full transition-all duration-300" style={{ width: `${uploadProgress}%` }}></div>
+                            </div>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+
+                    <div className="bg-slate-800/90 border border-slate-700/80 rounded-2xl p-6 shadow-xl">
+                      <h2 className="text-base font-bold text-white mb-1">Export Laporan Opname ke Excel</h2>
+                      <p className="text-xs text-slate-400 mb-4">Unduh hasil audit fisik terlengkap dengan konversi otomatis Pcs ke Koli & Varian</p>
+                      <button onClick={handleExportToExcel} className="w-full bg-emerald-600 hover:bg-emerald-500 text-white font-semibold py-3 rounded-xl shadow-lg shadow-emerald-600/35 transition-all">Download Laporan Excel Bergaya (.xls / .xlsx)</button>
+                    </div>
                   </>
                 ) : (
-                  // FITUR HISTORI & DOWNLOAD KHUSUS MENU AUDITOR
-                  <div className="space-y-6">
-                    <div className="flex bg-slate-800/90 border border-slate-700/80 p-1.5 rounded-2xl shadow-xl">
-                      <button onClick={() => setExportSubTab('my_history')} className={`flex-1 py-2.5 text-xs font-semibold rounded-xl transition-all ${exportSubTab === 'my_history' ? 'bg-blue-600 text-white shadow-md' : 'text-slate-400 hover:text-white'}`}>Histori Input SO Saya ({myAuditorLogs.length})</button>
-                      <button onClick={() => setExportSubTab('quick_download')} className={`flex-1 py-2.5 text-xs font-semibold rounded-xl transition-all ${exportSubTab === 'quick_download' ? 'bg-blue-600 text-white shadow-md' : 'text-slate-400 hover:text-white'}`}>Unduh Cepat Excel</button>
-                    </div>
+                  <div className="bg-slate-800/90 border border-slate-700/80 rounded-2xl p-6 shadow-xl space-y-4">
+                    <h2 className="text-base font-bold text-white">Histori File Excel yang Di-import</h2>
+                    <p className="text-xs text-slate-400">Catatan riwayat file template yang pernah diunggah beserta waktu dan modus importnya</p>
 
-                    {exportSubTab === 'my_history' ? (
-                      <div className="bg-slate-800/90 border border-slate-700/80 rounded-2xl p-6 shadow-xl space-y-4">
-                        <div className="flex justify-between items-center border-b border-slate-700/80 pb-4">
-                          <div>
-                            <h2 className="text-base font-bold text-white">Histori Input Opname ({currentUser})</h2>
-                            <p className="text-xs text-slate-400">Daftar lengkap transaksi fisik yang Anda input sebelumnya</p>
-                          </div>
-                          <button onClick={() => handleExportToExcel(myAuditorLogs)} disabled={myAuditorLogs.length === 0} className="bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 text-white text-xs font-semibold px-4 py-2 rounded-xl transition-all shadow-md">
-                            Unduh Laporan ini (.xlsx)
-                          </button>
-                        </div>
-
-                        {myAuditorLogs.length === 0 ? (
-                          <div className="text-center py-10 text-xs text-slate-500 border border-dashed border-slate-700 rounded-xl">
-                            Belum ada riwayat hasil input SO yang tersimpan atas nama {currentUser}.
-                          </div>
-                        ) : (
-                          <div className="overflow-x-auto">
-                            <table className="w-full text-left text-xs">
-                              <thead className="bg-slate-900 text-slate-400 font-mono uppercase border-b border-slate-700">
-                                <tr>
-                                  <th className="p-3">Waktu & Zona</th>
-                                  <th className="p-3">SKU Barang</th>
-                                  <th className="p-3 text-right">Qty Auditor</th>
-                                  <th className="p-3 text-center">Status Verifikasi</th>
-                                  <th className="p-3 text-center">Status ACC</th>
-                                </tr>
-                              </thead>
-                              <tbody className="divide-y divide-slate-800">
-                                {myAuditorLogs.map(log => (
-                                  <tr key={log.id} className="hover:bg-slate-700/30">
-                                    <td className="p-3">
-                                      <span className="font-semibold text-slate-200">{log.zone}</span>
-                                      <span className="block text-[10px] text-slate-400">{log.timestamp}</span>
-                                    </td>
-                                    <td className="p-3">
-                                      <span className="font-mono text-blue-400 font-semibold block">{log.sku}</span>
-                                      <span className="text-slate-300 text-[11px]">{log.name}</span>
-                                    </td>
-                                    <td className="p-3 text-right font-mono text-white font-bold">
-                                      {log.inputQty} {log.unit} ({log.pcsQty} Pcs)
-                                    </td>
-                                    <td className="p-3 text-center">
-                                      <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${log.qcName !== '-' ? 'bg-indigo-500/20 text-indigo-300 border border-indigo-500/30' : 'bg-slate-800 text-slate-400 border border-slate-700'}`}>
-                                        {log.qcName !== '-' ? `Verified (${log.qcName})` : 'Unverified'}
-                                      </span>
-                                    </td>
-                                    <td className="p-3 text-center">
-                                      <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${log.accStatus === 'APPROVED' ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30' : 'bg-amber-500/10 text-amber-400 border border-amber-500/30'}`}>
-                                        {log.accStatus}
-                                      </span>
-                                    </td>
-                                  </tr>
-                                ))}
-                              </tbody>
-                            </table>
-                          </div>
-                        )}
+                    {importHistory.length === 0 ? (
+                      <div className="text-center py-8 text-xs text-slate-500 border border-dashed border-slate-700 rounded-xl">
+                        Belum ada file Excel yang di-import pada sesi ini
                       </div>
                     ) : (
-                      <div className="bg-slate-800/90 border border-slate-700/80 rounded-2xl p-6 shadow-xl space-y-4">
-                        <div className="flex justify-between items-center">
-                          <div>
-                            <h2 className="text-base font-bold text-white">Ekspor Data Hasil Opname Saya</h2>
-                            <p className="text-xs text-slate-400">Unduh data hasil pencatatan audit fisik dalam format File Excel (.xlsx)</p>
-                          </div>
-                          <span className="bg-blue-600/20 text-blue-400 border border-blue-500/30 text-xs px-3 py-1 rounded-full font-mono font-bold">
-                            {myAuditorLogs.length} Record Anda
-                          </span>
-                        </div>
-
-                        <div className="pt-3">
-                          <button onClick={() => handleExportToExcel(myAuditorLogs)} disabled={myAuditorLogs.length === 0} className="w-full bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 text-white font-semibold py-3.5 rounded-xl shadow-lg transition-all text-sm flex items-center justify-center space-x-2">
-                            <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
-                            <span>Unduh Hasil Opname Saya ke Excel (.xlsx)</span>
-                          </button>
-                        </div>
+                      <div className="overflow-x-auto">
+                        <table className="w-full text-left text-xs">
+                          <thead className="bg-slate-900 text-slate-400 font-mono uppercase border-b border-slate-700">
+                            <tr>
+                              <th className="p-3">Waktu Import</th>
+                              <th className="p-3">Nama File Excel</th>
+                              <th className="p-3">Mode / Menu Import</th>
+                              <th className="p-3">Uploader (Koordinator)</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-slate-800">
+                            {importHistory.map(imp => (
+                              <tr key={imp.id} className="hover:bg-slate-700/30">
+                                <td className="p-3 font-mono text-slate-300">{imp.timestamp}</td>
+                                <td className="p-3 font-semibold text-blue-400">{imp.fileName}</td>
+                                <td className="p-3"><span className="px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">{imp.mode}</span></td>
+                                <td className="p-3 text-slate-300">{imp.uploader}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
                       </div>
                     )}
                   </div>
@@ -1493,28 +1515,53 @@
                   <div className="flex justify-between items-center">
                     <div>
                       <h2 className="text-base font-bold text-white">Tambah Akun Tim Baru</h2>
+                      <p className="text-xs text-slate-400">Buat akun Auditor atau QC tambahan (Maksimal 10 Akun).</p>
                     </div>
-                    <span className="bg-blue-600/20 text-blue-400 border border-blue-500/30 text-xs px-3 py-1 rounded-full font-mono font-bold">{accounts.length} / 10 Akun</span>
+                    <span className="bg-blue-600/20 text-blue-400 border border-blue-500/30 text-xs px-3 py-1 rounded-full font-mono font-bold">
+                      {accounts.length} / 10 Akun
+                    </span>
                   </div>
 
                   <form onSubmit={handleAddAccount} className="grid grid-cols-1 md:grid-cols-3 gap-3 pt-2">
                     <div>
                       <label className="block text-[11px] text-slate-300 mb-1">Nama Tampilan User</label>
-                      <input type="text" placeholder="misal: Auditor 3" value={newAccName} onChange={(e) => setNewAccName(e.target.value)} className="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-xs text-white" />
+                      <input 
+                        type="text" 
+                        placeholder="misal: Auditor 3" 
+                        value={newAccName} 
+                        onChange={(e) => setNewAccName(e.target.value)} 
+                        className="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-xs text-white"
+                      />
                     </div>
                     <div>
                       <label className="block text-[11px] text-slate-300 mb-1">Peran Akses</label>
-                      <select value={newAccRole} onChange={(e) => setNewAccRole(e.target.value)} className="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-xs text-white">
+                      <select 
+                        value={newAccRole} 
+                        onChange={(e) => setNewAccRole(e.target.value)} 
+                        className="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-xs text-white"
+                      >
                         <option value="auditor">Auditor (Input Fisik)</option>
                         <option value="qc">Checker / QC (Verifikasi)</option>
                       </select>
                     </div>
                     <div>
                       <label className="block text-[11px] text-slate-300 mb-1">Password Akses</label>
-                      <input type="password" placeholder="Password..." value={newAccPass} onChange={(e) => setNewAccPass(e.target.value)} className="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-xs text-white font-mono" />
+                      <input 
+                        type="password" 
+                        placeholder="Password..." 
+                        value={newAccPass} 
+                        onChange={(e) => setNewAccPass(e.target.value)} 
+                        className="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-xs text-white font-mono"
+                      />
                     </div>
                     <div className="md:col-span-3 flex justify-end">
-                      <button type="submit" disabled={accounts.length >= 10} className="bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white text-xs font-semibold px-4 py-2.5 rounded-xl transition-all shadow-md">+ Tambah Akun Baru</button>
+                      <button 
+                        type="submit" 
+                        disabled={accounts.length >= 10}
+                        className="bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white text-xs font-semibold px-4 py-2.5 rounded-xl transition-all shadow-md"
+                      >
+                        + Tambah Akun Baru
+                      </button>
                     </div>
                   </form>
                 </div>
@@ -1526,22 +1573,59 @@
                       <div key={acc.key} className="bg-slate-900 border border-slate-700/80 rounded-xl p-4 space-y-3">
                         <div className="flex justify-between items-center">
                           <span className="text-xs font-bold text-blue-400 uppercase">Peran: {acc.role}</span>
-                          {acc.key !== 'koordinator' && (
-                            <button onClick={() => handleDeleteAccount(acc.key)} className="bg-rose-500/10 hover:bg-rose-500/30 text-rose-400 border border-rose-500/30 text-[10px] px-2 py-0.5 rounded transition-all">Hapus</button>
-                          )}
+                          <div className="flex items-center space-x-2">
+                            <span className="text-[10px] text-slate-500 font-mono">Key: {acc.key}</span>
+                            {acc.key !== 'koordinator' && (
+                              <button 
+                                onClick={() => handleDeleteAccount(acc.key)}
+                                className="bg-rose-500/10 hover:bg-rose-500/30 text-rose-400 border border-rose-500/30 text-[10px] px-2 py-0.5 rounded transition-all"
+                              >
+                                Hapus
+                              </button>
+                            )}
+                          </div>
                         </div>
                         <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                           <div>
-                            <label className="block text-[11px] text-slate-400 mb-1">Nama Tampilan</label>
-                            <input type="text" value={editAccountState[acc.key]?.name || ''} placeholder={acc.name} onChange={(e) => { const val = e.target.value; setEditAccountState(prev => ({ ...prev, [acc.key]: { ...prev[acc.key], name: val } })); }} className="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-xs text-white" />
+                            <label className="block text-[11px] text-slate-400 mb-1">Nama Tampilan / User</label>
+                            <input 
+                              type="text" 
+                              value={editAccountState[acc.key]?.name || ''} 
+                              placeholder={acc.name}
+                              onChange={(e) => {
+                                const val = e.target.value;
+                                setEditAccountState(prev => ({
+                                  ...prev,
+                                  [acc.key]: { ...prev[acc.key], name: val }
+                                }));
+                              }} 
+                              className="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-xs text-white"
+                            />
                           </div>
                           <div>
-                            <label className="block text-[11px] text-slate-400 mb-1">Password Baru</label>
-                            <input type="password" placeholder="Kosongkan jika tetap" value={editAccountState[acc.key]?.pass || ''} onChange={(e) => { const val = e.target.value; setEditAccountState(prev => ({ ...prev, [acc.key]: { ...prev[acc.key], pass: val } })); }} className="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-xs text-white font-mono" />
+                            <label className="block text-[11px] text-slate-400 mb-1">Password Baru (Opsional)</label>
+                            <input 
+                              type="password" 
+                              placeholder="Kosongkan jika tetap" 
+                              value={editAccountState[acc.key]?.pass || ''} 
+                              onChange={(e) => {
+                                const val = e.target.value;
+                                setEditAccountState(prev => ({
+                                  ...prev,
+                                  [acc.key]: { ...prev[acc.key], pass: val }
+                                }));
+                              }} 
+                              className="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-xs text-white font-mono"
+                            />
                           </div>
                         </div>
                         <div className="flex justify-end">
-                          <button onClick={() => handleSaveAccountSettings(acc.key)} className="bg-blue-600 hover:bg-blue-500 text-white text-xs font-semibold px-4 py-2 rounded-lg transition-all shadow-md">Simpan Perubahan</button>
+                          <button 
+                            onClick={() => handleSaveAccountSettings(acc.key)}
+                            className="bg-blue-600 hover:bg-blue-500 text-white text-xs font-semibold px-4 py-2 rounded-lg transition-all shadow-md"
+                          >
+                            Simpan Perubahan
+                          </button>
                         </div>
                       </div>
                     ))}
