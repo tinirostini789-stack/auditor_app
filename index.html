@@ -782,8 +782,11 @@
         });
 
         if (dashboardSearch.trim()) {
-          const q = dashboardSearch.toLowerCase();
-          items = items.filter(item => item.sku.toLowerCase().includes(q) || item.name.toLowerCase().includes(q));
+          const tokens = dashboardSearch.toLowerCase().trim().split(/\s+/);
+          items = items.filter(item => {
+            const target = (item.sku + ' ' + item.name + ' ' + (item.color || '') + ' ' + (item.size || '')).toLowerCase();
+            return tokens.every(token => target.includes(token));
+          });
         }
 
         if (sortConfig.key) {
@@ -1648,10 +1651,10 @@
                       <h3 className="text-sm font-semibold text-white">Tabel Perbandingan Stok System vs Stok Fisik</h3>
                       <p className="text-[11px] text-slate-400">Menampilkan halaman {dashboardPage} dari {reconciliationData.totalPages} ({reconciliationData.totalItemsCount.toLocaleString()} item total)</p>
                     </div>
-                    <div className="w-full sm:w-72">
+                    <div className="w-full sm:w-80">
                       <input 
                         type="text" 
-                        placeholder="Cari SKU Variasi / Nama..." 
+                        placeholder="Cari SKU / Nama (Contoh: m24 florence 150)..." 
                         value={dashboardSearch} 
                         onChange={(e) => { setDashboardSearch(e.target.value); setDashboardPage(1); }} 
                         className="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-blue-500"
