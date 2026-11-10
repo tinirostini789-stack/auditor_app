@@ -27,9 +27,9 @@
     const supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
     const INITIAL_MASTER_STOCK = [
-      { id: '1', name: 'Sepatu Running Speed', color: 'Merah', size: '42', skuInduk: 'SKU-RUN-SPD', sku: 'SKU-RUN-SPD-RED-42', salesPerMonth: 120, movingCategory: 'Fast Moving', price: 550000, priceCategory: 'Medium Value', zone: 'Zona A1', systemQty: 120, conversionRatio: 50 },
-      { id: '2', name: 'Tas BackPack Travel', color: 'Hitam', size: '30L', skuInduk: 'SKU-BAG-TRV', sku: 'SKU-BAG-TRV-BLK-30L', salesPerMonth: 15, movingCategory: 'Slow Moving', price: 1850000, priceCategory: 'High Value', zone: 'Zona A2', systemQty: 250, conversionRatio: 50 },
-      { id: '3', name: 'Lemari Jati Jepara', color: 'Cokelat', size: '1x2m', skuInduk: 'Lemari Jati', sku: 'lemari-jati-coklat-2m', salesPerMonth: 275, movingCategory: 'Fast Moving', price: 2000000, priceCategory: 'High Value', zone: 'Zona B1', systemQty: 500, conversionRatio: 10 }
+      { id: '1', name: 'Sepatu Running Speed', color: 'Merah', size: '42', skuInduk: 'SKU-RUN-SPD', sku: 'SKU-RUN-SPD-RED-42', salesPerMonth: 120, movingCategory: 'Fast Moving', price: 550000, priceCategory: 'Medium Value', zone: 'Lantai 1', systemQty: 120, conversionRatio: 50 },
+      { id: '2', name: 'Tas BackPack Travel', color: 'Hitam', size: '30L', skuInduk: 'SKU-BAG-TRV', sku: 'SKU-BAG-TRV-BLK-30L', salesPerMonth: 15, movingCategory: 'Slow Moving', price: 1850000, priceCategory: 'High Value', zone: 'Lantai 2', systemQty: 250, conversionRatio: 50 },
+      { id: '3', name: 'Kasur Genoa Florence', color: 'Putih', size: '150x200', skuInduk: 'Kasur-M24', sku: 'Kasur-M24-150x200-FLORENCE-Genoa-(PT)', salesPerMonth: 275, movingCategory: 'Fast Moving', price: 4200000, priceCategory: 'High Value', zone: 'Lantai 3', systemQty: 500, conversionRatio: 1 }
     ];
 
     const DEFAULT_ACCOUNTS = [
@@ -79,8 +79,11 @@
       const [uploadProgress, setUploadProgress] = useState(0);
       const [uploadStatusMsg, setUploadStatusMsg] = useState('');
 
-      const [selectedZone, setSelectedZone] = useState('Zona A1');
+      // State Zonasi (Lantai 1 - 15 & Gedung GCK, CM, UKM)
+      const [selectedZone, setSelectedZone] = useState('Lantai 1');
       const [customZone, setCustomZone] = useState('');
+      const [selectedBuildings, setSelectedBuildings] = useState({ GCK: false, CM: true, UKM: false });
+
       const [skuInput, setSkuInput] = useState('');
       const [selectedSkuObj, setSelectedSkuObj] = useState(null);
       const [inputQty, setInputQty] = useState('');
@@ -91,18 +94,28 @@
 
       const [dashboardSearch, setDashboardSearch] = useState('');
       const [sortConfig, setSortConfig] = useState({ key: null, direction: 'asc' });
-      // State pagination dashboard agar sanggup menampilkan hingga 30.000 SKU dengan performa super cepat & stabil
       const [dashboardPage, setDashboardPage] = useState(1);
       const itemsPerPage = 100;
 
-      const defaultZones = ['Zona A1', 'Zona A2', 'Zona B1', 'Zona B2', 'Zona C1', 'Zona C3', 'Bulk Area', 'Lainnya...'];
+      const [editingSku, setEditingSku] = useState(null);
+      const [tempQtyValue, setTempQtyValue] = useState('');
+
+      // Checkbox state for bulk selection
+      const [selectedLogIds, setSelectedLogIds] = useState([]);
+
+      const defaultZones = [
+        'Lantai 1', 'Lantai 2', 'Lantai 3', 'Lantai 4', 'Lantai 5', 
+        'Lantai 6', 'Lantai 7', 'Lantai 8', 'Lantai 9', 'Lantai 10', 
+        'Lantai 11', 'Lantai 12', 'Lantai 13', 'Lantai 14', 'Lantai 15', 'Lainnya...'
+      ];
 
       useEffect(() => {
         fetchCloudData();
 
+        // Safely attempt Supabase Realtime WebSocket subscription with try-catch guardrail
         let channel = null;
         try {
-          if (typeof WebSocket !== 'undefined') {
+          if (typeof window !== 'undefined' && typeof WebSocket !== 'undefined') {
             channel = supabase
               .channel('schema-db-changes')
               .on(
@@ -113,22 +126,20 @@
                 }
               )
               .subscribe((status, err) => {
-                if (status === 'CHANNEL_ERROR') {
-                  console.warn('Realtime WebSocket ditolak oleh sistem sandbox.');
+                if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
+                  console.warn('Realtime channel fallback: Mode polling aktif.');
                 }
               });
           }
         } catch (err) {
-          console.warn('WebSocket tidak didukung atau diblokir di lingkungan ini:', err);
+          console.warn('WebSocket diblokir di lingkungan ini. Menggunakan mode REST API fallback.');
         }
 
         return () => {
           if (channel) {
             try {
               supabase.removeChannel(channel);
-            } catch (e) {
-              // Abaikan error penutupan socket
-            }
+            } catch (e) {}
           }
         };
       }, []);
@@ -173,7 +184,7 @@
             const formattedLogs = logData.map(log => ({
               id: String(log.id),
               timestamp: log.timestamp || new Date().toLocaleString('id-ID'),
-              zone: log.zone || 'Zona General',
+              zone: log.zone || 'Lantai 1',
               sku: log.sku,
               name: log.name || 'SKU Item',
               inputQty: parseFloat(log.input_qty) || 0,
@@ -235,7 +246,6 @@
             setTodos(formattedTodos);
           }
 
-          // Optimized fetch untuk master_skus (mendukung hingga 30.000 SKU secara pagination/chunking Supabase jika diperlukan)
           let allSkuData = [];
           let rangeStart = 0;
           let rangeStep = 1000;
@@ -271,7 +281,7 @@
               movingCategory: item.moving_category,
               price: item.price,
               priceCategory: item.price_category,
-              zone: 'Zona A1',
+              zone: 'Lantai 1',
               systemQty: item.system_qty,
               conversionRatio: item.conversion_ratio
             }));
@@ -395,14 +405,16 @@
         setShowSuggestions(false);
       };
 
+      // Multi-keyword fuzzy non-sequential search logic
       const skuSuggestions = useMemo(() => {
         if (!skuInput.trim()) return [];
-        const query = skuInput.toLowerCase();
-        // Dibatasi max 50 hasil untuk pencarian instan yang sangat ringan meskipun master stock berisi 30.000 SKU
+        const tokens = skuInput.toLowerCase().trim().split(/\s+/);
         const matches = [];
         for (let i = 0; i < masterStock.length; i++) {
           const item = masterStock[i];
-          if (item.sku.toLowerCase().includes(query) || item.name.toLowerCase().includes(query)) {
+          const target = (item.sku + ' ' + item.name + ' ' + (item.color || '') + ' ' + (item.size || '')).toLowerCase();
+          const matchAll = tokens.every(token => target.includes(token));
+          if (matchAll) {
             matches.push(item);
             if (matches.length >= 50) break;
           }
@@ -430,7 +442,12 @@
           alert('Mohon isi SKU dan Jumlah Qty yang valid!');
           return;
         }
-        const zoneToSave = selectedZone === 'Lainnya...' ? customZone : selectedZone;
+
+        const baseZone = selectedZone === 'Lainnya...' ? customZone : selectedZone;
+        const activeBuildings = Object.keys(selectedBuildings).filter(b => selectedBuildings[b]);
+        const buildingStr = activeBuildings.length > 0 ? `[Gedung: ${activeBuildings.join(', ')}] ` : '';
+        const zoneToSave = `${buildingStr}${baseZone || 'Lantai 1'}`;
+
         const activeSkuObj = selectedSkuObj || masterStock.find(m => m.sku.toLowerCase() === skuInput.toLowerCase()) || { sku: skuInput, name: 'SKU Non-Master / Item Baru', systemQty: 0 };
 
         const newLogId = Date.now().toString();
@@ -439,7 +456,7 @@
         const newLog = {
           id: newLogId,
           timestamp: currentTimestamp,
-          zone: zoneToSave || 'Zona General',
+          zone: zoneToSave,
           sku: activeSkuObj.sku,
           name: activeSkuObj.name,
           inputQty: parseFloat(inputQty),
@@ -455,8 +472,16 @@
           accBy: '-'
         };
 
-        setAuditLogs(prev => [newLog, ...prev]);
-        await logActionHistory('TAMBAH_SKU', activeSkuObj.sku, `Input ${inputQty} ${unit} (${convertedValues.pcs} Pcs) di ${zoneToSave || 'Zona General'}`);
+        const updatedLogs = [newLog, ...auditLogs];
+        setAuditLogs(updatedLogs);
+
+        // Reset building selection to default CM every 200 items
+        if (updatedLogs.length > 0 && updatedLogs.length % 200 === 0) {
+          setSelectedBuildings({ GCK: false, CM: true, UKM: false });
+          alert('Jumlah SO telah mencapai 200 item! Pilihan Gedung otomatis mereset ke default (CM).');
+        }
+
+        await logActionHistory('TAMBAH_SKU', activeSkuObj.sku, `Input ${inputQty} ${unit} (${convertedValues.pcs} Pcs) di ${zoneToSave}`);
 
         setSkuInput('');
         setSelectedSkuObj(null);
@@ -467,7 +492,7 @@
           const payload = {
             id: newLogId,
             timestamp: currentTimestamp,
-            zone: zoneToSave || 'Zona General',
+            zone: zoneToSave,
             sku: activeSkuObj.sku,
             name: activeSkuObj.name,
             input_qty: parseFloat(inputQty),
@@ -520,6 +545,7 @@
         if (!confirm(`Apakah Anda yakin ingin menghapus record SKU: ${logSku}?`)) return;
 
         setAuditLogs(prev => prev.filter(log => log.id !== id));
+        setSelectedLogIds(prev => prev.filter(item => item !== id));
         await logActionHistory('HAPUS_SKU', logSku, `Menghapus record fisik yang dibuat oleh ${logAuthor}`);
 
         try {
@@ -528,6 +554,54 @@
         } catch (err) {
           console.error('Gagal menghapus dari cloud:', err);
         }
+      };
+
+      const handleBulkDeleteLogs = async () => {
+        if (currentRole === 'qc') {
+          alert('Akses Ditolak! Akun QC tidak diizinkan menghapus data.');
+          return;
+        }
+        
+        // Filter log mana yang valid dihapus berdasarkan role
+        let logsToDelete = auditLogs.filter(l => selectedLogIds.includes(l.id));
+        if (currentRole === 'auditor') {
+          logsToDelete = logsToDelete.filter(l => l.auditorName.toLowerCase() === currentUser.toLowerCase());
+          if (logsToDelete.length === 0) {
+            alert('Akses Ditolak! Anda hanya bisa menghapus data record yang Anda input sendiri.');
+            return;
+          }
+        }
+
+        if (!confirm(`Apakah Anda yakin ingin menghapus ${logsToDelete.length} record opname fisik terpilih?`)) return;
+
+        const idsToDelete = logsToDelete.map(l => l.id);
+        setAuditLogs(prev => prev.filter(l => !idsToDelete.includes(l.id)));
+        setSelectedLogIds(prev => prev.filter(id => !idsToDelete.includes(id)));
+
+        await logActionHistory('BULK_HAPUS_SKU', 'MULTIPLE', `Menghapus ${idsToDelete.length} record opname fisik secara massal oleh ${currentUser}`);
+
+        try {
+          await supabase.from('audit_logs').delete().in('id', idsToDelete);
+          await fetchAuditLogs();
+          alert(`${idsToDelete.length} Record terpilih berhasil dihapus.`);
+        } catch (err) {
+          console.error('Gagal menghapus massal dari cloud:', err);
+          alert('Gagal menghapus data dari cloud database.');
+        }
+      };
+
+      const handleSelectAllLogs = (e) => {
+        if (e.target.checked) {
+          setSelectedLogIds(auditLogs.map(l => l.id));
+        } else {
+          setSelectedLogIds([]);
+        }
+      };
+
+      const handleToggleSelectLog = (id) => {
+        setSelectedLogIds(prev => 
+          prev.includes(id) ? prev.filter(i => i !== id) : [...prev, id]
+        );
       };
 
       const handleAccLog = async (id, currentStatus, skuCode) => {
@@ -576,6 +650,30 @@
           await fetchAuditLogs();
         } catch (err) {
           console.error('Gagal memperbarui status QC:', err);
+        }
+      };
+
+      const handleQuickSaveQty = async (skuCode) => {
+        if (currentRole !== 'koordinator') {
+          alert('Hanya Koordinator yang diizinkan merubah System Qty!');
+          return;
+        }
+        const newQtyNum = parseFloat(tempQtyValue);
+        if (isNaN(newQtyNum) || newQtyNum < 0) {
+          alert('Mohon masukkan jumlah Qty yang valid!');
+          return;
+        }
+
+        setMasterStock(prev => prev.map(item => item.sku === skuCode ? { ...item, systemQty: newQtyNum } : item));
+        setEditingSku(null);
+
+        await logActionHistory('EDIT_QTY_CEPAT', skuCode, `Memperbarui System Qty menjadi ${newQtyNum} Pcs via Dashboard`);
+
+        try {
+          await supabase.from('master_skus').update({ system_qty: newQtyNum }).eq('sku', skuCode);
+        } catch (err) {
+          console.error('Gagal memperbarui Qty ke cloud:', err);
+          alert('Gagal menyimpan Qty baru ke cloud.');
         }
       };
 
@@ -660,6 +758,12 @@
         });
       }, [todos, todoPeriod, todoPrioritySort]);
 
+      const masterMap = useMemo(() => {
+        const map = {};
+        masterStock.forEach(m => { map[m.sku.toLowerCase()] = m; });
+        return map;
+      }, [masterStock]);
+
       const reconciliationData = useMemo(() => {
         const physicalCounts = {};
         auditLogs.forEach(log => {
@@ -720,7 +824,6 @@
         const totalDiscrepanciesCount = allItemsForCount.filter(diff => diff !== 0).length;
         const totalSkusCount = masterStock.length;
 
-        // Pagination untuk tabel dashboard agar mampu menampilkan 30.000 SKU tanpa lag
         const totalPages = Math.ceil(items.length / itemsPerPage) || 1;
         const paginatedItems = items.slice((dashboardPage - 1) * itemsPerPage, dashboardPage * itemsPerPage);
 
@@ -733,7 +836,7 @@
           direction = 'desc';
         }
         setSortConfig({ key, direction });
-        setDashboardPage(1); // Reset ke halaman pertama saat sort berubah
+        setDashboardPage(1);
       };
 
       const downloadNativeExcel = (sheetName, headers, rows, filename) => {
@@ -757,7 +860,7 @@
         const rows = [
           [1, 'Sepatu Running Speed', 'Merah', '42', 'SKU-RUN-SPD', 'SKU-RUN-SPD-RED-42', 120, 'Fast Moving', 550000, 'Medium Value'],
           [2, 'Tas BackPack Travel', 'Hitam', '30L', 'SKU-BAG-TRV', 'SKU-BAG-TRV-BLK-30L', 15, 'Slow Moving', 1850000, 'High Value'],
-          [3, 'Lemari Jati Jepara', 'Cokelat', '1x2m', 'Lemari Jati', 'lemari-jati-coklat-2m', 275, 'Fast Moving', 2000000, 'High Value']
+          [3, 'Kasur Genoa Florence', 'Putih', '150x200', 'Kasur-M24', 'Kasur-M24-150x200-FLORENCE-Genoa-(PT)', 275, 'Fast Moving', 4200000, 'High Value']
         ];
         downloadNativeExcel('Master Data', headers, rows, 'Template_Master_Data.xlsx');
       };
@@ -787,9 +890,10 @@
           alert('Belum ada data opname fisik untuk diexport!');
           return;
         }
-        const headers = ['No', 'Waktu Audit', 'Zona / Lokasi', 'Kode SKU Variasi', 'Nama Produk', 'Qty Input Physical', 'Satuan Input', 'Rasio Konversi', 'Physical Qty (Pcs)', 'Physical Qty (Koli)', 'System Qty (Pcs)', 'Selisih (Pcs)', 'Selisih (Koli)', 'Author (Auditor)', 'QC Check', 'Status ACC Koordinator', 'Catatan Auditor'];
+        const headers = ['No', 'Waktu Audit', 'Zona / Lokasi', 'Kode SKU Variasi', 'Nama Produk', 'Qty Input Physical', 'Satuan Input', 'Rasio Konversi', 'Physical Qty (Pcs)', 'Physical Qty (Koli)', 'System Qty (Pcs) [Updated]', 'Selisih (Pcs)', 'Selisih (Koli)', 'Author (Auditor)', 'QC Check', 'Status ACC Koordinator', 'Catatan Auditor'];
         const rows = auditLogs.map((log, index) => {
-          const systemQty = log.systemQty || 0;
+          const matchedMaster = masterMap[log.sku.toLowerCase()];
+          const systemQty = matchedMaster ? (matchedMaster.systemQty || 0) : (log.systemQty || 0);
           const selisihPcs = log.pcsQty - systemQty;
           const selisihKoli = parseFloat((selisihPcs / (log.conversionRatio || 50)).toFixed(2));
           return [
@@ -831,7 +935,7 @@
         if (!file) return;
         setIsProcessingFile(true);
         setUploadProgress(30);
-        setUploadStatusMsg('Membaca file Excel (Mendukung hingga 30.000 SKU)...');
+        setUploadStatusMsg('Membaca file Excel...');
         
         const reader = new FileReader();
         reader.onload = async (evt) => {
@@ -869,7 +973,7 @@
                 const priceCategory = String(findValue(['Kategori Harga Barang']) || 'Medium Value').trim();
 
                 const existingIndex = updatedMaster.findIndex(item => item.sku.toLowerCase() === sku.toLowerCase());
-                const newItem = { id: existingIndex >= 0 ? updatedMaster[existingIndex].id : sku, name, color, size, skuInduk, sku, salesPerMonth: sales, movingCategory, price, priceCategory, zone: 'Zona A1', systemQty: existingIndex >= 0 ? updatedMaster[existingIndex].systemQty : 0, conversionRatio: 50 };
+                const newItem = { id: existingIndex >= 0 ? updatedMaster[existingIndex].id : sku, name, color, size, skuInduk, sku, salesPerMonth: sales, movingCategory, price, priceCategory, zone: 'Lantai 1', systemQty: existingIndex >= 0 ? updatedMaster[existingIndex].systemQty : 0, conversionRatio: 50 };
                 
                 if (existingIndex >= 0) updatedMaster[existingIndex] = { ...updatedMaster[existingIndex], ...newItem };
                 else updatedMaster.push(newItem);
@@ -881,7 +985,6 @@
                 });
               }
 
-              // Batch insert ke Supabase per 500 records agar aman untuk 30.000 SKU
               for (let i = 0; i < batchUpsertData.length; i += 500) {
                 const chunk = batchUpsertData.slice(i, i + 500);
                 await supabase.from('master_skus').upsert(chunk, { onConflict: 'sku' });
@@ -906,18 +1009,33 @@
                 if (existingIndex >= 0) {
                   updatedMaster[existingIndex].systemQty = newQty;
                   updatedMaster[existingIndex].conversionRatio = ratio;
-                } else {
-                  updatedMaster.push({ id: sku, name: 'Item (' + sku + ')', color: '-', size: '-', skuInduk: '-', sku, salesPerMonth: 0, movingCategory: 'Medium Moving', price: 0, priceCategory: 'Medium Value', zone: 'Zona A1', systemQty: newQty, conversionRatio: ratio });
-                }
 
-                batchQtyData.push({ sku, system_qty: newQty, conversion_ratio: ratio });
+                  batchQtyData.push({
+                    sku: sku,
+                    name: updatedMaster[existingIndex].name,
+                    color: updatedMaster[existingIndex].color,
+                    size: updatedMaster[existingIndex].size,
+                    sku_induk: updatedMaster[existingIndex].skuInduk,
+                    sales_avg: updatedMaster[existingIndex].salesPerMonth,
+                    moving_category: updatedMaster[existingIndex].movingCategory,
+                    price: updatedMaster[existingIndex].price,
+                    price_category: updatedMaster[existingIndex].priceCategory,
+                    system_qty: newQty,
+                    conversion_ratio: ratio
+                  });
+                } else {
+                  const newItem = { id: sku, name: 'Item (' + sku + ')', color: '-', size: '-', skuInduk: '-', sku, salesPerMonth: 0, movingCategory: 'Medium Moving', price: 0, priceCategory: 'Medium Value', zone: 'Lantai 1', systemQty: newQty, conversionRatio: ratio };
+                  updatedMaster.push(newItem);
+
+                  batchQtyData.push({
+                    sku: sku, name: newItem.name, color: '-', size: '-', sku_induk: '-', sales_avg: 0, moving_category: 'Medium Moving', price: 0, price_category: 'Medium Value', system_qty: newQty, conversion_ratio: ratio
+                  });
+                }
               }
 
-              for (let i = 0; i < batchQtyData.length; i += 500) {
-                const chunk = batchQtyData.slice(i, i + 500);
-                for (const item of chunk) {
-                  await supabase.from('master_skus').update({ system_qty: item.system_qty, conversion_ratio: item.conversion_ratio }).eq('sku', item.sku);
-                }
+              for (let i = 0; i < batchQtyData.length; i += 1000) {
+                const chunk = batchQtyData.slice(i, i + 1000);
+                await supabase.from('master_skus').upsert(chunk, { onConflict: 'sku' });
               }
 
             } else if (importMode === 'sync_delete') {
@@ -948,7 +1066,7 @@
                 const systemQty = parseNumber(findValue(['Qty System', 'Qty'])) || 0;
                 const conversionRatio = parseNumber(findValue(['Isi Per Koli', 'Isi Per Karung', 'Rasio'])) || 50;
 
-                const newItem = { id: sku, name, color, size, skuInduk, sku, salesPerMonth: sales, movingCategory, price, priceCategory, zone: 'Zona A1', systemQty, conversionRatio };
+                const newItem = { id: sku, name, color, size, skuInduk, sku, salesPerMonth: sales, movingCategory, price, priceCategory, zone: 'Lantai 1', systemQty, conversionRatio };
                 newMasterList.push(newItem);
 
                 batchSyncData.push({
@@ -983,7 +1101,7 @@
             setImportHistory(prev => [newImportLog, ...prev]);
 
             setUploadProgress(100);
-            setUploadStatusMsg('Sinkronisasi 30.000 SKU Selesai di Cloud!');
+            setUploadStatusMsg('Sinkronisasi SKU Selesai di Cloud!');
             setTimeout(() => setIsProcessingFile(false), 1200);
           } catch (err) {
             setIsProcessingFile(false);
@@ -1002,7 +1120,7 @@
                   <svg className="w-8 h-8" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"/></svg>
                 </div>
                 <h1 className="text-xl font-bold text-white">AuditStock Pro Security</h1>
-                <p className="text-xs text-slate-400 mt-1">Silakan login terlebih dahulu untuk mengakses sistem (Skala 30.000 SKU)</p>
+                <p className="text-xs text-slate-400 mt-1">Silakan login terlebih dahulu untuk mengakses sistem</p>
               </div>
 
               {loginError && (
@@ -1104,15 +1222,40 @@
                     ) : (
                       <form onSubmit={handleAddAuditLog} className="space-y-4">
                         <div>
-                          <label className="block text-xs font-semibold uppercase text-slate-300 mb-1">1. Zona / Lokasi</label>
-                          <select value={selectedZone} onChange={(e) => setSelectedZone(e.target.value)} className="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2.5 text-sm text-white">
-                            {defaultZones.map(z => <option key={z} value={z}>{z}</option>)}
-                          </select>
+                          <div className="flex justify-between items-center mb-1">
+                            <label className="block text-xs font-semibold uppercase text-slate-300">1. Lantai & Gedung</label>
+                            <span className="text-[10px] text-emerald-400 font-mono">Total SO: {auditLogs.length} item</span>
+                          </div>
+                          
+                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 mb-2">
+                            <select value={selectedZone} onChange={(e) => setSelectedZone(e.target.value)} className="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2.5 text-sm text-white">
+                              {defaultZones.map(z => <option key={z} value={z}>{z}</option>)}
+                            </select>
+
+                            <div className="bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 flex items-center justify-around">
+                              <span className="text-[10px] font-semibold text-slate-400 uppercase">Gedung:</span>
+                              {['GCK', 'CM', 'UKM'].map(b => (
+                                <label key={b} className="flex items-center space-x-1 cursor-pointer text-xs font-bold text-slate-200">
+                                  <input 
+                                    type="checkbox" 
+                                    checked={selectedBuildings[b]} 
+                                    onChange={(e) => setSelectedBuildings(prev => ({ ...prev, [b]: e.target.checked }))}
+                                    className="w-3.5 h-3.5 accent-blue-600 rounded"
+                                  />
+                                  <span>{b}</span>
+                                </label>
+                              ))}
+                            </div>
+                          </div>
+
+                          {selectedZone === 'Lainnya...' && (
+                            <input type="text" placeholder="Masukkan nama zona manual..." value={customZone} onChange={(e) => setCustomZone(e.target.value)} className="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white mt-1" />
+                          )}
                         </div>
 
                         <div className="relative">
-                          <label className="block text-xs font-semibold uppercase text-slate-300 mb-1">2. SKU Variasi Barang (Kapasitas s.d 30.000 SKU)</label>
-                          <input type="text" placeholder="Cari Kode SKU / Nama..." value={skuInput} onChange={(e) => { setSkuInput(e.target.value); setSelectedSkuObj(null); setShowSuggestions(true); }} className="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2.5 text-sm text-white" />
+                          <label className="block text-xs font-semibold uppercase text-slate-300 mb-1">2. SKU Variasi Barang (Pencarian Bebas / Non-Urut)</label>
+                          <input type="text" placeholder="Contoh: m24 florence 150x200..." value={skuInput} onChange={(e) => { setSkuInput(e.target.value); setSelectedSkuObj(null); setShowSuggestions(true); }} className="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2.5 text-sm text-white" />
                           {showSuggestions && skuSuggestions.length > 0 && (
                             <div className="absolute z-30 left-0 right-0 mt-1 bg-slate-900 border border-slate-700 rounded-xl shadow-2xl max-h-60 overflow-y-auto divide-y divide-slate-800">
                               {skuSuggestions.map(item => (
@@ -1163,8 +1306,24 @@
                     )}
                   </div>
 
-                  <div className="lg:col-span-7 bg-slate-800/90 border border-slate-700/80 rounded-2xl p-5 shadow-xl flex flex-col">
-                    <h3 className="text-base font-semibold text-white mb-4">Daftar Hasil Record Opname ({auditLogs.length})</h3>
+                  <div className="lg:col-span-7 bg-slate-800/90 border border-slate-700/80 rounded-2xl p-5 shadow-xl flex flex-col relative">
+                    <div className="flex flex-wrap justify-between items-center mb-4 gap-2">
+                      <h3 className="text-base font-semibold text-white">Daftar Hasil Record Opname ({auditLogs.length})</h3>
+                      {selectedLogIds.length > 0 && (
+                        <div className="flex items-center space-x-2">
+                          <span className="text-xs bg-blue-500/20 text-blue-300 border border-blue-500/30 px-3 py-1.5 rounded-xl font-mono">
+                            {selectedLogIds.length} item dipilih
+                          </span>
+                          <button 
+                            onClick={handleBulkDeleteLogs}
+                            className="bg-rose-600 hover:bg-rose-500 text-white text-xs font-semibold px-3 py-1.5 rounded-xl shadow-lg transition-all flex items-center space-x-1"
+                          >
+                            <span>🗑️ Hapus Terpilih ({selectedLogIds.length})</span>
+                          </button>
+                        </div>
+                      )}
+                    </div>
+
                     {auditLogs.length === 0 ? (
                       <div className="flex-1 flex flex-col items-center justify-center text-center p-8 border-2 border-dashed border-slate-700 rounded-xl my-4">
                         <p className="text-slate-400 font-medium">Belum ada data fisik yang di-input</p>
@@ -1174,6 +1333,15 @@
                         <table className="w-full text-left text-xs">
                           <thead className="bg-slate-900/80 text-slate-400 font-mono uppercase border-b border-slate-700">
                             <tr>
+                              <th className="p-3 text-center w-10">
+                                <input 
+                                  type="checkbox" 
+                                  onChange={handleSelectAllLogs}
+                                  checked={auditLogs.length > 0 && selectedLogIds.length === auditLogs.length}
+                                  className="w-4 h-4 accent-blue-600 cursor-pointer"
+                                  title="Pilih Semua"
+                                />
+                              </th>
                               <th className="p-3">Waktu & Zona</th>
                               <th className="p-3">SKU & Author</th>
                               <th className="p-3 text-right">Qty & Konversi</th>
@@ -1184,7 +1352,15 @@
                           </thead>
                           <tbody className="divide-y divide-slate-800">
                             {auditLogs.map(log => (
-                              <tr key={log.id} className="hover:bg-slate-700/30">
+                              <tr key={log.id} className={`hover:bg-slate-700/30 ${selectedLogIds.includes(log.id) ? 'bg-blue-950/20' : ''}`}>
+                                <td className="p-3 text-center">
+                                  <input 
+                                    type="checkbox" 
+                                    checked={selectedLogIds.includes(log.id)}
+                                    onChange={() => handleToggleSelectLog(log.id)}
+                                    className="w-4 h-4 accent-blue-600 cursor-pointer"
+                                  />
+                                </td>
                                 <td className="p-3"><span className="font-semibold text-slate-200">{log.zone}</span><span className="block text-[10px] text-slate-400">{log.timestamp}</span></td>
                                 <td className="p-3">
                                   <span className="font-mono text-blue-400 font-semibold block">{log.sku}</span>
@@ -1254,7 +1430,7 @@
                           <div className="flex items-start space-x-3">
                             <span className={`px-2 py-0.5 rounded text-[10px] font-mono font-bold uppercase mt-0.5 ${
                               hist.type === 'TAMBAH_SKU' ? 'bg-blue-500/20 text-blue-300 border border-blue-500/30' :
-                              hist.type === 'HAPUS_SKU' ? 'bg-rose-500/20 text-rose-300 border border-rose-500/30' :
+                              hist.type.includes('HAPUS_SKU') ? 'bg-rose-500/20 text-rose-300 border border-rose-500/30' :
                               hist.type.includes('ACC_QC') ? 'bg-indigo-500/20 text-indigo-300 border border-indigo-500/30' :
                               'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
                             }`}>
@@ -1469,7 +1645,7 @@
                 <div className="bg-slate-800/90 border border-slate-700/80 rounded-2xl p-5 shadow-xl space-y-4">
                   <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3">
                     <div>
-                      <h3 className="text-sm font-semibold text-white">Tabel Perbandingan Stok System vs Stok Fisik (Hingga 30.000 SKU)</h3>
+                      <h3 className="text-sm font-semibold text-white">Tabel Perbandingan Stok System vs Stok Fisik</h3>
                       <p className="text-[11px] text-slate-400">Menampilkan halaman {dashboardPage} dari {reconciliationData.totalPages} ({reconciliationData.totalItemsCount.toLocaleString()} item total)</p>
                     </div>
                     <div className="w-full sm:w-72">
@@ -1508,7 +1684,34 @@
                           <tr key={item.id} className="hover:bg-slate-700/30">
                             <td className="p-3 font-mono font-bold text-blue-400">{item.sku}</td>
                             <td className="p-3 text-slate-300">{item.name}</td>
-                            <td className="p-3 text-right font-mono text-white">{item.systemQty.toLocaleString()} Pcs</td>
+                            <td className="p-3 text-right font-mono text-white">
+                              {editingSku === item.sku ? (
+                                <div className="flex items-center justify-end space-x-1">
+                                  <input 
+                                    type="number" 
+                                    value={tempQtyValue} 
+                                    onChange={(e) => setTempQtyValue(e.target.value)} 
+                                    className="w-20 bg-slate-950 border border-blue-500 rounded px-2 py-1 text-xs text-white text-right font-bold focus:outline-none"
+                                    autoFocus
+                                  />
+                                  <button onClick={() => handleQuickSaveQty(item.sku)} className="bg-emerald-600 hover:bg-emerald-500 text-white px-2 py-1 rounded text-[10px] font-bold">✓</button>
+                                  <button onClick={() => setEditingSku(null)} className="bg-slate-700 hover:bg-slate-600 text-slate-300 px-2 py-1 rounded text-[10px]">✕</button>
+                                </div>
+                              ) : (
+                                <div className="flex items-center justify-end space-x-2">
+                                  <span>{item.systemQty.toLocaleString()} Pcs</span>
+                                  {currentRole === 'koordinator' && (
+                                    <button 
+                                      onClick={() => { setEditingSku(item.sku); setTempQtyValue(item.systemQty); }} 
+                                      className="text-slate-500 hover:text-blue-400 p-0.5 rounded transition-colors"
+                                      title="Edit Qty System Cepat"
+                                    >
+                                      ✏️
+                                    </button>
+                                  )}
+                                </div>
+                              )}
+                            </td>
                             <td className="p-3 text-right font-mono text-emerald-400 font-bold">{item.physicalQty.toLocaleString()} Pcs</td>
                             <td className="p-3 text-right font-mono font-bold"><span className={item.discrepancyPcs < 0 ? 'text-rose-400' : item.discrepancyPcs > 0 ? 'text-amber-400' : 'text-slate-400'}>{item.discrepancyPcs > 0 ? `+${item.discrepancyPcs.toLocaleString()}` : item.discrepancyPcs.toLocaleString()}</span></td>
                             <td className="p-3 text-center"><span className={`px-2 py-0.5 rounded text-[10px] font-bold ${item.status === 'MATCHED' ? 'bg-emerald-500/20 text-emerald-300' : item.status === 'SHORTAGE' ? 'bg-rose-500/20 text-rose-300' : 'bg-amber-500/20 text-amber-300'}`}>{item.status}</span></td>
@@ -1518,7 +1721,6 @@
                     </table>
                   </div>
 
-                  {/* Navigasi Pagination Dashboard */}
                   {reconciliationData.totalPages > 1 && (
                     <div className="flex items-center justify-between pt-3 border-t border-slate-700">
                       <button 
@@ -1615,7 +1817,7 @@
                     </div>
 
                     <div className="bg-slate-800/90 border border-slate-700/80 rounded-2xl p-6 shadow-xl relative">
-                      <h2 className="text-base font-bold text-white mb-2">Import File Excel (Hingga 30.000 SKU)</h2>
+                      <h2 className="text-base font-bold text-white mb-2">Import File Excel</h2>
                       <p className="text-xs text-slate-400 mb-4">Pilih opsi import sesuai template yang Anda gunakan</p>
 
                       <div className="grid grid-cols-1 md:grid-cols-3 gap-2 bg-slate-900 p-1.5 rounded-xl border border-slate-700 mb-4">
@@ -1630,7 +1832,7 @@
                           <span className="text-sm font-semibold text-blue-400">
                             Upload Excel: {importMode === 'master' ? 'Data Master Baru' : importMode === 'qty' ? 'Qty Stok Saja' : 'Sync & Hapus SKU Master'}
                           </span>
-                          <span className="text-xs text-slate-500 mt-1">Format .xlsx, .xls, atau .csv didukung (Optimasi batch 30k SKU)</span>
+                          <span className="text-xs text-slate-500 mt-1">Format .xlsx, .xls, atau .csv didukung</span>
                         </label>
                       </div>
 
@@ -1649,7 +1851,7 @@
 
                     <div className="bg-slate-800/90 border border-slate-700/80 rounded-2xl p-6 shadow-xl">
                       <h2 className="text-base font-bold text-white mb-1">Export Laporan Opname ke Excel</h2>
-                      <p className="text-xs text-slate-400 mb-4">Unduh hasil audit fisik terlengkap dengan konversi otomatis Pcs ke Koli & Varian</p>
+                      <p className="text-xs text-slate-400 mb-4">Unduh hasil audit fisik terlengkap dengan konversi otomatis Pcs ke Koli & Varian (System Qty otomatis ter-update)</p>
                       <button onClick={handleExportToExcel} className="w-full bg-emerald-600 hover:bg-emerald-500 text-white font-semibold py-3 rounded-xl shadow-lg shadow-emerald-600/35 transition-all">Download Laporan Excel Bergaya (.xls / .xlsx)</button>
                     </div>
                   </>
