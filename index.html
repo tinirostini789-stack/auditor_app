@@ -103,19 +103,32 @@
       // Checkbox state for bulk selection
       const [selectedLogIds, setSelectedLogIds] = useState([]);
 
+      // NEW FEATURE 1 & 4 STATES
+      const [opnameTableSearch, setOpnameTableSearch] = useState('');
+      const [editingOpnameLog, setEditingOpnameLog] = useState(null);
+      const [editLogSku, setEditLogSku] = useState('');
+      const [editLogQty, setEditLogQty] = useState('');
+      const [editLogZone, setEditLogZone] = useState('');
+
       const defaultZones = [
         'Lantai 1', 'Lantai 2', 'Lantai 3', 'Lantai 4', 'Lantai 5', 
         'Lantai 6', 'Lantai 7', 'Lantai 8', 'Lantai 9', 'Lantai 10', 
         'Lantai 11', 'Lantai 12', 'Lantai 13', 'Lantai 14', 'Lantai 15', 'Lainnya...'
       ];
 
+      // Auto lookup name when editing SKU in modal
+      const editLogAutoName = useMemo(() => {
+        if (!editLogSku) return '-';
+        const matched = masterStock.find(m => m.sku.toLowerCase() === editLogSku.trim().toLowerCase());
+        return matched ? matched.name : 'SKU Non-Master / Item Baru';
+      }, [editLogSku, masterStock]);
+
       useEffect(() => {
         fetchCloudData();
 
-        // Safely attempt Supabase Realtime WebSocket subscription with try-catch guardrail
         let channel = null;
         try {
-          if (typeof window !== 'undefined' && typeof WebSocket !== 'undefined') {
+          if (typeof WebSocket !== 'undefined') {
             channel = supabase
               .channel('schema-db-changes')
               .on(
@@ -126,13 +139,13 @@
                 }
               )
               .subscribe((status, err) => {
-                if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
-                  console.warn('Realtime channel fallback: Mode polling aktif.');
+                if (status === 'CHANNEL_ERROR') {
+                  console.warn('Realtime WebSocket ditolak oleh sistem sandbox.');
                 }
               });
           }
         } catch (err) {
-          console.warn('WebSocket diblokir di lingkungan ini. Menggunakan mode REST API fallback.');
+          console.warn('WebSocket tidak didukung atau diblokir di lingkungan ini:', err);
         }
 
         return () => {
@@ -143,6 +156,84 @@
           }
         };
       }, []);
+
+      const handleOpenEditModal = (log) => {
+        if (currentRole === 'qc') {
+          alert('Akun QC tidak diizinkan merubah data record opname.');
+          return;
+        }
+        if (currentRole === 'auditor' && currentUser.toLowerCase() !== log.auditorName.toLowerCase()) {
+          alert('Auditor hanya diizinkan mengedit record miliknya sendiri!');
+          return;
+        }
+        setEditingOpnameLog(log);
+        setEditLogSku(log.sku);
+        setEditLogQty(log.inputQty);
+        setEditLogZone(log.zone);
+      };
+
+      const handleSaveOpnameLogEdit = async (e) => {
+        e.preventDefault();
+        if (!editingOpnameLog) return;
+        
+        const newQty = parseFloat(editLogQty);
+        if (isNaN(newQty) || newQty <= 0) {
+          alert('Mohon masukkan Qty SO yang valid!');
+          return;
+        }
+
+        const matchedMaster = masterStock.find(m => m.sku.toLowerCase() === editLogSku.trim().toLowerCase());
+        const updatedName = matchedMaster ? matchedMaster.name : 'SKU Non-Master / Item Baru';
+        const ratio = editingOpnameLog.conversionRatio || 50;
+        const newPcsQty = editingOpnameLog.unit === 'Koli' ? newQty * ratio : newQty;
+        const newKoliQty = editingOpnameLog.unit === 'Koli' ? newQty : newQty / ratio;
+
+        setAuditLogs(prev => prev.map(l => l.id === editingOpnameLog.id ? {
+          ...l,
+          sku: editLogSku.trim(),
+          name: updatedName,
+          inputQty: newQty,
+          zone: editLogZone,
+          pcsQty: newPcsQty,
+          koliQty: newKoliQty
+        } : l));
+
+        await logActionHistory('EDIT_RECORD_OPNAME', editLogSku, `Edit Record ID ${editingOpnameLog.id}: Qty ${newQty} ${editingOpnameLog.unit}, Zone: ${editLogZone}`);
+
+        try {
+          await supabase.from('audit_logs').update({
+            sku: editLogSku.trim(),
+            name: updatedName,
+            input_qty: newQty,
+            zone: editLogZone,
+            pcs_qty: newPcsQty,
+            karung_qty: newKoliQty
+          }).eq('id', editingOpnameLog.id);
+          
+          setEditingOpnameLog(null);
+          alert('Record Opname berhasil diperbarui!');
+          await fetchAuditLogs();
+        } catch (err) {
+          console.error('Gagal update record opname:', err);
+          alert('Gagal memperbarui data di cloud database.');
+        }
+      };
+
+      // Filtered Opname Logs for Table Search Bar (FEATURE 4)
+      const filteredAuditLogs = useMemo(() => {
+        if (!opnameTableSearch.trim()) return auditLogs;
+        const tokens = opnameTableSearch.toLowerCase().trim().split(/\s+/);
+        return auditLogs.filter(log => {
+          const target = (log.sku + ' ' + log.name + ' ' + log.zone + ' ' + log.inputQty + ' ' + log.unit + ' ' + log.auditorName + ' ' + (log.note || '')).toLowerCase();
+          return tokens.every(token => target.includes(token));
+        });
+      }, [auditLogs, opnameTableSearch]);
+
+      const handleDownloadEditSOStoreTemplate = () => {
+        const headers = ['Record ID', 'Gedung & Lantai', 'SKU Variasi', 'Nama Product', 'Qty SO (Pcs)'];
+        const rows = auditLogs.map(l => [l.id, l.zone, l.sku, l.name, l.pcsQty]);
+        downloadNativeExcel('Edit SO Massal', headers, rows, 'Template_SO_Edit_Massal.xlsx');
+      };
 
       const logActionHistory = async (type, sku, details) => {
         const timestamp = new Date().toLocaleString('id-ID');
@@ -562,7 +653,6 @@
           return;
         }
         
-        // Filter log mana yang valid dihapus berdasarkan role
         let logsToDelete = auditLogs.filter(l => selectedLogIds.includes(l.id));
         if (currentRole === 'auditor') {
           logsToDelete = logsToDelete.filter(l => l.auditorName.toLowerCase() === currentUser.toLowerCase());
@@ -952,7 +1042,7 @@
             setUploadStatusMsg(`Memproses ${json.length} baris data SKU...`);
 
             let updatedMaster = [...masterStock];
-            const modeNameLabel = importMode === 'master' ? '1. Import Data Master Baru' : importMode === 'qty' ? '2. Import Qty Stok Saja' : '3. Sync & Hapus SKU Master';
+            const modeNameLabel = importMode === 'master' ? '1. Import Data Master Baru' : importMode === 'qty' ? '2. Import Qty Stok Saja' : importMode === 'sync_delete' ? '3. Sync & Hapus SKU Master' : '4. Import Edit SO Massal';
 
             if (importMode === 'master') {
               const batchUpsertData = [];
@@ -1090,6 +1180,50 @@
               }
 
               updatedMaster = newMasterList;
+            } else if (importMode === 'edit_so_massal') {
+              let updatedCount = 0;
+              for (const row of json) {
+                const findValue = (names) => {
+                  const cleanedNames = names.map(cleanKey);
+                  for (const k of Object.keys(row)) {
+                    if (cleanedNames.includes(cleanKey(k))) return row[k];
+                  }
+                  return '';
+                };
+                const recordId = String(findValue(['Record ID', 'ID', 'No'])).trim();
+                const zone = String(findValue(['Gedung & Lantai', 'Gedung', 'Zona'])).trim();
+                const sku = String(findValue(['SKU Variasi', 'SKU'])).trim();
+                const newQty = parseNumber(findValue(['Qty SO (Pcs)', 'Qty SO', 'Qty']));
+
+                if (!recordId && !sku) continue;
+
+                let targetLog = null;
+                if (recordId) targetLog = auditLogs.find(l => l.id === recordId);
+                if (!targetLog && sku) targetLog = auditLogs.find(l => l.sku.toLowerCase() === sku.toLowerCase());
+
+                if (targetLog) {
+                  const matchedMaster = masterStock.find(m => m.sku.toLowerCase() === (sku || targetLog.sku).toLowerCase());
+                  const finalSku = sku || targetLog.sku;
+                  const finalName = matchedMaster ? matchedMaster.name : targetLog.name;
+                  const finalZone = zone || targetLog.zone;
+                  const ratio = targetLog.conversionRatio || 50;
+                  const pcsQty = newQty;
+                  const koliQty = pcsQty / ratio;
+
+                  await supabase.from('audit_logs').update({
+                    sku: finalSku,
+                    name: finalName,
+                    zone: finalZone,
+                    input_qty: pcsQty,
+                    pcs_qty: pcsQty,
+                    karung_qty: koliQty
+                  }).eq('id', targetLog.id);
+
+                  updatedCount++;
+                }
+              }
+              await fetchAuditLogs();
+              alert(`Berhasil memperbarui ${updatedCount} record opname massal!`);
             }
 
             setMasterStock(updatedMaster);
@@ -1104,7 +1238,7 @@
             setImportHistory(prev => [newImportLog, ...prev]);
 
             setUploadProgress(100);
-            setUploadStatusMsg('Sinkronisasi SKU Selesai di Cloud!');
+            setUploadStatusMsg('Sinkronisasi Selesai di Cloud!');
             setTimeout(() => setIsProcessingFile(false), 1200);
           } catch (err) {
             setIsProcessingFile(false);
@@ -1310,26 +1444,35 @@
                   </div>
 
                   <div className="lg:col-span-7 bg-slate-800/90 border border-slate-700/80 rounded-2xl p-5 shadow-xl flex flex-col relative">
-                    <div className="flex flex-wrap justify-between items-center mb-4 gap-2">
-                      <h3 className="text-base font-semibold text-white">Daftar Hasil Record Opname ({auditLogs.length})</h3>
-                      {selectedLogIds.length > 0 && (
-                        <div className="flex items-center space-x-2">
-                          <span className="text-xs bg-blue-500/20 text-blue-300 border border-blue-500/30 px-3 py-1.5 rounded-xl font-mono">
-                            {selectedLogIds.length} item dipilih
-                          </span>
+                    <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center mb-4 gap-3">
+                      <div>
+                        <h3 className="text-base font-semibold text-white">Daftar Hasil Record Opname ({filteredAuditLogs.length})</h3>
+                      </div>
+                      
+                      {/* Search Bar Acak di Header Tabel Opname */}
+                      <div className="flex items-center space-x-2 w-full sm:w-auto">
+                        <input 
+                          type="text" 
+                          placeholder="Cari Acak (contoh: GCK Lantai 1 Kasur)..." 
+                          value={opnameTableSearch} 
+                          onChange={(e) => setOpnameTableSearch(e.target.value)} 
+                          className="bg-slate-900 border border-slate-700 rounded-xl px-3 py-1.5 text-xs text-white focus:outline-none focus:border-blue-500 w-full sm:w-64"
+                        />
+
+                        {selectedLogIds.length > 0 && (
                           <button 
                             onClick={handleBulkDeleteLogs}
-                            className="bg-rose-600 hover:bg-rose-500 text-white text-xs font-semibold px-3 py-1.5 rounded-xl shadow-lg transition-all flex items-center space-x-1"
+                            className="bg-rose-600 hover:bg-rose-500 text-white text-xs font-semibold px-3 py-1.5 rounded-xl shadow-lg transition-all whitespace-nowrap"
                           >
-                            <span>🗑️ Hapus Terpilih ({selectedLogIds.length})</span>
+                            <span>🗑️ Hapus ({selectedLogIds.length})</span>
                           </button>
-                        </div>
-                      )}
+                        )}
+                      </div>
                     </div>
 
-                    {auditLogs.length === 0 ? (
+                    {filteredAuditLogs.length === 0 ? (
                       <div className="flex-1 flex flex-col items-center justify-center text-center p-8 border-2 border-dashed border-slate-700 rounded-xl my-4">
-                        <p className="text-slate-400 font-medium">Belum ada data fisik yang di-input</p>
+                        <p className="text-slate-400 font-medium">Data opname tidak ditemukan</p>
                       </div>
                     ) : (
                       <div className="flex-1 overflow-x-auto">
@@ -1340,7 +1483,7 @@
                                 <input 
                                   type="checkbox" 
                                   onChange={handleSelectAllLogs}
-                                  checked={auditLogs.length > 0 && selectedLogIds.length === auditLogs.length}
+                                  checked={filteredAuditLogs.length > 0 && selectedLogIds.length === filteredAuditLogs.length}
                                   className="w-4 h-4 accent-blue-600 cursor-pointer"
                                   title="Pilih Semua"
                                 />
@@ -1354,7 +1497,7 @@
                             </tr>
                           </thead>
                           <tbody className="divide-y divide-slate-800">
-                            {auditLogs.map(log => (
+                            {filteredAuditLogs.map(log => (
                               <tr key={log.id} className={`hover:bg-slate-700/30 ${selectedLogIds.includes(log.id) ? 'bg-blue-950/20' : ''}`}>
                                 <td className="p-3 text-center">
                                   <input 
@@ -1393,14 +1536,24 @@
                                   </button>
                                 </td>
                                 <td className="p-3 text-center">
-                                  <button 
-                                    onClick={() => handleDeleteAuditLog(log.id, log.auditorName, log.sku)} 
-                                    disabled={currentRole === 'qc'}
-                                    className={`p-1.5 rounded-lg text-[10px] transition-all ${currentRole === 'qc' ? 'opacity-30 cursor-not-allowed bg-slate-800 text-slate-500' : 'bg-rose-500/10 text-rose-400 hover:bg-rose-500/30'}`}
-                                    title={currentRole === 'qc' ? 'Akun QC tidak diizinkan menghapus data' : 'Hapus Record'}
-                                  >
-                                    Hapus
-                                  </button>
+                                  <div className="flex items-center justify-center space-x-1">
+                                    <button 
+                                      onClick={() => handleOpenEditModal(log)} 
+                                      disabled={currentRole === 'qc'}
+                                      className={`p-1.5 rounded-lg text-[10px] transition-all ${currentRole === 'qc' ? 'opacity-30 cursor-not-allowed bg-slate-800 text-slate-500' : 'bg-blue-500/10 text-blue-400 hover:bg-blue-500/30'}`}
+                                      title="Edit Record Per-SKU"
+                                    >
+                                      ✏️ Edit
+                                    </button>
+                                    <button 
+                                      onClick={() => handleDeleteAuditLog(log.id, log.auditorName, log.sku)} 
+                                      disabled={currentRole === 'qc'}
+                                      className={`p-1.5 rounded-lg text-[10px] transition-all ${currentRole === 'qc' ? 'opacity-30 cursor-not-allowed bg-slate-800 text-slate-500' : 'bg-rose-500/10 text-rose-400 hover:bg-rose-500/30'}`}
+                                      title="Hapus Record"
+                                    >
+                                      Hapus
+                                    </button>
+                                  </div>
                                 </td>
                               </tr>
                             ))}
@@ -1410,6 +1563,68 @@
                     )}
                   </div>
                 </div>
+
+                {/* Modal Edit Record Opname */}
+                {editingOpnameLog && (
+                  <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-sm flex items-center justify-center p-4">
+                    <div className="bg-slate-900 border border-slate-700 rounded-2xl max-w-md w-full p-6 shadow-2xl space-y-4">
+                      <div className="flex justify-between items-center border-b border-slate-800 pb-3">
+                        <h3 className="text-base font-bold text-white">Edit Record Opname</h3>
+                        <button onClick={() => setEditingOpnameLog(null)} className="text-slate-400 hover:text-white">✕</button>
+                      </div>
+
+                      <form onSubmit={handleSaveOpnameLogEdit} className="space-y-4">
+                        <div>
+                          <label className="block text-xs font-semibold text-slate-400 mb-1">Waktu Audit (Dikunci / Tidak Bisa Diubah)</label>
+                          <input type="text" value={editingOpnameLog.timestamp} disabled className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-slate-500 font-mono cursor-not-allowed" />
+                        </div>
+
+                        <div>
+                          <label className="block text-xs font-semibold text-slate-300 mb-1">Kode SKU Variasi</label>
+                          <input 
+                            type="text" 
+                            value={editLogSku} 
+                            onChange={(e) => setEditLogSku(e.target.value)} 
+                            className="w-full bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-xs text-blue-400 font-mono font-bold focus:outline-none focus:border-blue-500" 
+                          />
+                        </div>
+
+                        <div className="bg-slate-950/70 p-3 rounded-xl border border-slate-800">
+                          <span className="text-[10px] uppercase font-bold text-slate-400 block mb-1">Nama Produk (Otomatis Lookup):</span>
+                          <span className="text-xs font-semibold text-emerald-300">{editLogAutoName}</span>
+                        </div>
+
+                        <div className="grid grid-cols-2 gap-3">
+                          <div>
+                            <label className="block text-xs font-semibold text-slate-300 mb-1">Qty SO ({editingOpnameLog.unit})</label>
+                            <input 
+                              type="number" 
+                              step="any" 
+                              value={editLogQty} 
+                              onChange={(e) => setEditLogQty(e.target.value)} 
+                              className="w-full bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white font-mono font-bold" 
+                            />
+                          </div>
+
+                          <div>
+                            <label className="block text-xs font-semibold text-slate-300 mb-1">Zona Gedung & Lantai</label>
+                            <input 
+                              type="text" 
+                              value={editLogZone} 
+                              onChange={(e) => setEditLogZone(e.target.value)} 
+                              className="w-full bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white" 
+                            />
+                          </div>
+                        </div>
+
+                        <div className="flex justify-end space-x-2 pt-2 border-t border-slate-800">
+                          <button type="button" onClick={() => setEditingOpnameLog(null)} className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold rounded-xl">Batal</button>
+                          <button type="submit" className="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white text-xs font-semibold rounded-xl shadow-lg">Simpan Perubahan</button>
+                        </div>
+                      </form>
+                    </div>
+                  </div>
+                )}
 
                 <div className="bg-slate-800/90 border border-slate-700/80 rounded-2xl p-5 shadow-xl space-y-4">
                   <div className="flex justify-between items-center">
@@ -1651,10 +1866,10 @@
                       <h3 className="text-sm font-semibold text-white">Tabel Perbandingan Stok System vs Stok Fisik</h3>
                       <p className="text-[11px] text-slate-400">Menampilkan halaman {dashboardPage} dari {reconciliationData.totalPages} ({reconciliationData.totalItemsCount.toLocaleString()} item total)</p>
                     </div>
-                    <div className="w-full sm:w-80">
+                    <div className="w-full sm:w-72">
                       <input 
                         type="text" 
-                        placeholder="Cari SKU / Nama (Contoh: m24 florence 150)..." 
+                        placeholder="Cari SKU Variasi / Nama..." 
                         value={dashboardSearch} 
                         onChange={(e) => { setDashboardSearch(e.target.value); setDashboardPage(1); }} 
                         className="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-blue-500"
@@ -1788,33 +2003,41 @@
                           <p className="text-xs text-slate-400">Unduh file template berformat rapi (Header Biru, Border Tegas & Zebra Striping)</p>
                         </div>
                         <span className="bg-emerald-500/10 text-emerald-400 border border-emerald-500/30 text-xs px-3 py-1 rounded-full font-mono font-bold">
-                          {masterStock.length.toLocaleString()} SKU Master Tersedia
+                          4 Template Tersedia
                         </span>
                       </div>
 
-                      <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mt-4">
+                      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mt-4">
                         <div className="bg-slate-900/80 border border-indigo-500/30 rounded-xl p-4 flex flex-col justify-between">
                           <div>
-                            <span className="text-indigo-300 text-xs font-bold block mb-2">Template 1: Data Master (3 Baris Contoh)</span>
-                            <p className="text-[11px] text-slate-400 mb-3 leading-relaxed">Berisi contoh format minimum untuk import data master baru agar form tetap bersih.</p>
+                            <span className="text-indigo-300 text-xs font-bold block mb-2">Template 1: Data Master</span>
+                            <p className="text-[11px] text-slate-400 mb-3 leading-relaxed">Format minimum import data master baru.</p>
                           </div>
-                          <button onClick={handleDownloadMasterTemplate} className="w-full bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold py-2.5 rounded-lg shadow-md transition-all">Download Template Master</button>
+                          <button onClick={handleDownloadMasterTemplate} className="w-full bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold py-2.5 rounded-lg shadow-md transition-all">Download Master</button>
                         </div>
 
                         <div className="bg-slate-900/80 border border-blue-500/30 rounded-xl p-4 flex flex-col justify-between">
                           <div>
-                            <span className="text-blue-300 text-xs font-bold block mb-2">Template 2: Qty Stok ({masterStock.length.toLocaleString()} SKU)</span>
-                            <p className="text-[11px] text-slate-400 mb-3 leading-relaxed">Memuat seluruh SKU untuk memperbarui Qty System & Rasio Koli.</p>
+                            <span className="text-blue-300 text-xs font-bold block mb-2">Template 2: Qty Stok</span>
+                            <p className="text-[11px] text-slate-400 mb-3 leading-relaxed">Memuat seluruh SKU untuk update Qty System.</p>
                           </div>
-                          <button onClick={handleDownloadQtyTemplate} className="w-full bg-blue-600 hover:bg-blue-500 text-white text-xs font-semibold py-2.5 rounded-lg shadow-md transition-all">Download Template Qty</button>
+                          <button onClick={handleDownloadQtyTemplate} className="w-full bg-blue-600 hover:bg-blue-500 text-white text-xs font-semibold py-2.5 rounded-lg shadow-md transition-all">Download Qty</button>
                         </div>
 
                         <div className="bg-slate-900/80 border border-emerald-500/30 rounded-xl p-4 flex flex-col justify-between">
                           <div>
-                            <span className="text-emerald-300 text-xs font-bold block mb-2">Template 3: Master Sync & Hapus SKU</span>
-                            <p className="text-[11px] text-slate-400 mb-3 leading-relaxed">Memuat seluruh SKU untuk edit data master atau menghapus baris SKU yang salah.</p>
+                            <span className="text-emerald-300 text-xs font-bold block mb-2">Template 3: Sync & Hapus</span>
+                            <p className="text-[11px] text-slate-400 mb-3 leading-relaxed">Format sync & hapus baris SKU usang.</p>
                           </div>
-                          <button onClick={handleDownloadMasterSyncTemplate} className="w-full bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold py-2.5 rounded-lg shadow-md transition-all">Download Template Sync/Hapus</button>
+                          <button onClick={handleDownloadMasterSyncTemplate} className="w-full bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold py-2.5 rounded-lg shadow-md transition-all">Download Sync</button>
+                        </div>
+
+                        <div className="bg-slate-900/80 border border-amber-500/30 rounded-xl p-4 flex flex-col justify-between">
+                          <div>
+                            <span className="text-amber-300 text-xs font-bold block mb-2">Template 4: SO Edit Massal</span>
+                            <p className="text-[11px] text-slate-400 mb-3 leading-relaxed">Unduh data opname untuk edit massal (Gedung, SKU, Qty SO).</p>
+                          </div>
+                          <button onClick={handleDownloadEditSOStoreTemplate} className="w-full bg-amber-600 hover:bg-amber-500 text-white text-xs font-semibold py-2.5 rounded-lg shadow-md transition-all">Download Edit SO</button>
                         </div>
                       </div>
                     </div>
@@ -1823,17 +2046,18 @@
                       <h2 className="text-base font-bold text-white mb-2">Import File Excel</h2>
                       <p className="text-xs text-slate-400 mb-4">Pilih opsi import sesuai template yang Anda gunakan</p>
 
-                      <div className="grid grid-cols-1 md:grid-cols-3 gap-2 bg-slate-900 p-1.5 rounded-xl border border-slate-700 mb-4">
-                        <button onClick={() => setImportMode('master')} className={`py-2 px-2 text-[11px] font-semibold rounded-lg transition-all ${importMode === 'master' ? 'bg-blue-600 text-white shadow-md' : 'text-slate-400 hover:text-white'}`}>1. Import Data Master Baru</button>
-                        <button onClick={() => setImportMode('qty')} className={`py-2 px-2 text-[11px] font-semibold rounded-lg transition-all ${importMode === 'qty' ? 'bg-blue-600 text-white shadow-md' : 'text-slate-400 hover:text-white'}`}>2. Import Qty Stok Saja</button>
-                        <button onClick={() => setImportMode('sync_delete')} className={`py-2 px-2 text-[11px] font-semibold rounded-lg transition-all ${importMode === 'sync_delete' ? 'bg-emerald-600 text-white shadow-md' : 'text-slate-400 hover:text-white'}`}>3. Sync & Hapus SKU Master</button>
+                      <div className="grid grid-cols-2 md:grid-cols-4 gap-2 bg-slate-900 p-1.5 rounded-xl border border-slate-700 mb-4">
+                        <button onClick={() => setImportMode('master')} className={`py-2 px-2 text-[11px] font-semibold rounded-lg transition-all ${importMode === 'master' ? 'bg-blue-600 text-white shadow-md' : 'text-slate-400 hover:text-white'}`}>1. Import Master</button>
+                        <button onClick={() => setImportMode('qty')} className={`py-2 px-2 text-[11px] font-semibold rounded-lg transition-all ${importMode === 'qty' ? 'bg-blue-600 text-white shadow-md' : 'text-slate-400 hover:text-white'}`}>2. Import Qty Stok</button>
+                        <button onClick={() => setImportMode('sync_delete')} className={`py-2 px-2 text-[11px] font-semibold rounded-lg transition-all ${importMode === 'sync_delete' ? 'bg-emerald-600 text-white shadow-md' : 'text-slate-400 hover:text-white'}`}>3. Sync & Hapus SKU</button>
+                        <button onClick={() => setImportMode('edit_so_massal')} className={`py-2 px-2 text-[11px] font-semibold rounded-lg transition-all ${importMode === 'edit_so_massal' ? 'bg-amber-600 text-white shadow-md' : 'text-slate-400 hover:text-white'}`}>4. Import Edit SO Massal</button>
                       </div>
 
                       <div className="border-2 border-dashed border-slate-700 rounded-xl p-6 text-center hover:border-blue-500 transition-colors">
                         <input type="file" accept=".xlsx, .xls, .csv" onChange={handleFileUpload} className="hidden" id="excel-upload-input" />
                         <label htmlFor="excel-upload-input" className="cursor-pointer flex flex-col items-center">
                           <span className="text-sm font-semibold text-blue-400">
-                            Upload Excel: {importMode === 'master' ? 'Data Master Baru' : importMode === 'qty' ? 'Qty Stok Saja' : 'Sync & Hapus SKU Master'}
+                            Upload Excel: {importMode === 'master' ? 'Data Master Baru' : importMode === 'qty' ? 'Qty Stok Saja' : importMode === 'sync_delete' ? 'Sync & Hapus SKU Master' : 'Import Edit SO Massal'}
                           </span>
                           <span className="text-xs text-slate-500 mt-1">Format .xlsx, .xls, atau .csv didukung</span>
                         </label>
